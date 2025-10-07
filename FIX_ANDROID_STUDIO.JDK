@@ -1,0 +1,56 @@
+===========================================
+     ANDROID STUDIO JDK CONFIGURATION FIX
+===========================================
+
+ERROR: Invalid Gradle JDK configuration found.
+The Gradle JVM is configured as #USE_PROJECT_JDK, but
+the Project JDK is invalid or not defined.
+
+SOLUTION STEPS:
+===============
+
+1. OPEN ANDROID STUDIO SETTINGS:
+   File → Settings → Build, Execution, Deployment → Build Tools → Gradle
+
+2. CHANGE GRADLE JDK TO EMBEDDED:
+   - Select "Gradle JDK": Choose "Embedded JDK (C:\Program Files\Android\Android Studio2\jbr)"
+   - Click "Apply" then "OK"
+   - This uses Android Studio's built-in JDK that works with Gradle 8.5
+
+3. REBUILD PROJECT:
+   Build → Rebuild Project
+   - Android Studio will sync Gradle automatically
+   - All dependencies will download (~5-10 minutes first time)
+
+4. VERIFY SDK LOCATION:
+   File → Settings → System Settings → Android SDK
+   - SDK location should be: C:\Program Files\Android\Android Studio2\sdk
+   - If different, update to match Android Studio's default
+
+5. RUN THE APP:
+   - Plugin install prompts may appear - accept them
+   - Build → Make Project (should generate real APK)
+   - Run → Run 'app' to test on device/emulator
+
+EXPECTED BUILD PROCESS:
+======================
+
+TYPICAL FIRST BUILD TIME: 5-15 minutes
+- Step 1: Gradle sync and dependency download
+- Step 2: Native library compilation
+- Step 3: APK generation
+
+AFTER FIX, EXPECTED APK_sizes:
+- Debug APK: ~25-30MB (with all PDF features)
+- Release APK: ~20-25MB (optimized)
+
+IF EMBEDDED JDK NOT FOUND:
+==========================
+
+Use Alternative JDK Paths:
+1. First choice: Embedded JDK (recommended)
+2. Second choice: Install JDK 17/18 from Oracle
+3. Third choice: Use system JDK if JDK 8
+
+SET JAVA_HOME REGISTRY:
+Set Java home to the working JDK path.
