@@ -84,8 +84,55 @@ function App() {
   const [layoutPreservation, setLayoutPreservation] = useState(true);
   const [allowPrinting, setAllowPrinting] = useState(true);
 
+  // Interaction Layer Control
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [isResizing, setIsResizing] = useState(false);
+  const [resizeStartSize, setResizeStartSize] = useState({ width: 0, height: 0 });
+  const [resizeStartPos, setResizeStartPos] = useState({ x: 0, y: 0 });
+
   const appendLog = (msg: string) => {
-    setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`]);
+    setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`].slice(-8)); // Limit log history for performance
+  };
+
+  // Move / Drag Logic
+  const handlePointerDown = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setSelectedOverlayId(id);
+    const overlay = editOverlays.find(o => o.id === id);
+    if (!overlay) return;
+
+    if ((e.target as HTMLElement).className === 'resize-handle') {
+      setIsResizing(true);
+      setResizeStartSize({ width: overlay.width || 100, height: overlay.height || 50 });
+      setResizeStartPos({ x: e.clientX, y: e.clientY });
+    } else {
+      setIsDragging(true);
+      setDragOffset({ x: e.clientX - overlay.x, y: e.clientY - overlay.y });
+    }
+  };
+
+  const handlePointerMove = (e: React.MouseEvent) => {
+    if (!selectedOverlayId) return;
+
+    if (isDragging) {
+      const newX = e.clientX - dragOffset.x;
+      const newY = e.clientY - dragOffset.y;
+      setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { ...o, x: newX, y: newY } : o));
+    } else if (isResizing) {
+      const deltaX = e.clientX - resizeStartPos.x;
+      const deltaY = e.clientY - resizeStartPos.y;
+      setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { 
+        ...o, 
+        width: Math.max(20, resizeStartSize.width + deltaX),
+        height: Math.max(20, resizeStartSize.height + deltaY)
+      } : o));
+    }
+  };
+
+  const handlePointerUp = () => {
+    setIsDragging(false);
+    setIsResizing(false);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -149,26 +196,26 @@ function App() {
   };
 
   const addOverlay = (e: React.MouseEvent) => {
-    if (activeEditorTool === 'cursor' || !file) return;
+    if (activeEditorTool === 'cursor') return;
     
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / 0.6;
-    const y = (e.clientY - rect.top) / 0.6;
-    
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
     const newOverlay: EditOverlay = {
       id: Math.random().toString(36).substr(2, 9),
-      type: (activeEditorTool === 'whiteout' ? 'rect' : activeEditorTool) as 'text' | 'rect' | 'image' | 'signature',
+      type: activeEditorTool === 'whiteout' ? 'rect' : activeEditorTool as any,
       page: selectedPage,
-      x,
-      y,
-      text: activeEditorTool === 'text' ? 'New Text' : '',
+      x: x - (activeEditorTool === 'text' ? 0 : 50),
+      y: y - (activeEditorTool === 'text' ? 10 : 25),
+      text: activeEditorTool === 'text' ? 'Double-click to type...' : '',
       fontSize: currentFontSize,
       color: activeEditorTool === 'whiteout' ? '#FFFFFF' : currentColor,
-      width: activeEditorTool === 'rect' || activeEditorTool === 'whiteout' ? 100 : 150,
-      height: activeEditorTool === 'rect' || activeEditorTool === 'whiteout' ? 50 : 100,
-      fontFamily: currentFontFamily
+      fontFamily: currentFontFamily,
+      width: activeEditorTool === 'text' ? undefined : 150,
+      height: activeEditorTool === 'text' ? undefined : 80
     };
-    
+
     setEditOverlays(prev => [...prev, newOverlay]);
     setSelectedOverlayId(newOverlay.id);
   };
@@ -1009,44 +1056,50 @@ function App() {
                       </div>
                     )}
 
-                    <div className="canvas-container" onClick={addOverlay}>
+                    <div className="canvas-container" onMouseMove={handlePointerMove} onMouseUp={handlePointerUp}>
                       <div className={documentDarkMode ? 'dark-canvas' : ''} style={{
                         position: 'relative', 
                         display: 'inline-block',
                         transition: 'filter 0.3s ease',
                       }}>
-                        <img src={previewImages[selectedPage - 1]} alt="Current Page" draggable={false} />
+                        <img src={previewImages[selectedPage - 1]} alt="Current Page" draggable={false} onMouseDown={(e) => {
+                          if (activeEditorTool === 'cursor') return;
+                          addOverlay(e as any);
+                        }} />
                         {editOverlays.filter(o => o.page === selectedPage).map(overlay => (
                             <div 
                               key={overlay.id}
                               className={`overlay-item ${selectedOverlayId === overlay.id ? 'selected' : ''}`}
-                              onClick={(e) => { e.stopPropagation(); setSelectedOverlayId(overlay.id); }}
+                              onMouseDown={(e) => handlePointerDown(e, overlay.id)}
                               style={{
-                                left: overlay.x * 0.6,
-                                top: overlay.y * 0.6,
-                                width: overlay.width ? overlay.width * 0.6 : 'auto',
-                                height: overlay.height ? overlay.height * 0.6 : 'auto',
+                                left: overlay.x,
+                                top: overlay.y,
+                                width: overlay.width || 'auto',
+                                height: overlay.height || 'auto',
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center'
                               }}
                             >
+                              <div className="resize-handle"></div>
                               {overlay.type === 'text' && (
-                                <input 
-                                  value={overlay.text} 
-                                  onChange={(e) => {
-                                    setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: e.target.value } : o));
-                                  }}
-                                  style={{
-                                    background: 'transparent', 
-                                    border: 'none', 
-                                    color: overlay.color, 
-                                    fontSize: (overlay.fontSize || 14) * 0.6, 
-                                    fontFamily: overlay.fontFamily,
-                                    outline: 'none',
-                                    width: '100%'
-                                  }}
-                                />
+                                  <input 
+                                    value={overlay.text} 
+                                    onMouseDown={e => e.stopPropagation()} /* Allow clicking into input */
+                                    onChange={(e) => {
+                                      setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: e.target.value } : o));
+                                    }}
+                                    style={{
+                                      background: 'transparent', 
+                                      border: 'none', 
+                                      color: overlay.color, 
+                                      fontSize: overlay.fontSize || 14, 
+                                      fontFamily: overlay.fontFamily,
+                                      outline: 'none',
+                                      width: '100%',
+                                      textAlign: 'center'
+                                    }}
+                                  />
                               )}
                               {overlay.type === 'rect' && (
                                 <div className="overlay-rect" style={{ width: '100%', height: '100%', background: overlay.color }}></div>
