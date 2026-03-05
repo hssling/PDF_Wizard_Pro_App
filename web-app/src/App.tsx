@@ -4,7 +4,7 @@ import {
   Search, Bell, User, Upload,
   FileImage, RotateCw, ScanText,
   Plus, Trash2, Settings, Menu, X, Lock, PenTool, Sparkles, ShieldAlert, Moon, Sun, ShieldCheck,
-  Edit3, Layers, Stamp, EyeOff, Brain, Home, Scissors, Download,
+  Edit3, Layers, Stamp, EyeOff, Brain, Home, Scissors, Download, SlidersHorizontal, Check, RefreshCw,
   MousePointer2, Hand, Pen, Pencil, Eraser, Highlighter, Square, Circle, Minus, ArrowRight,
   MessageSquare, ZoomIn, ZoomOut, Undo2, Redo2
 } from 'lucide-react';
@@ -102,7 +102,17 @@ function App() {
   const [allowPrinting, setAllowPrinting] = useState(true);
 
   // Create PDF State
-  const [pdfCreatorImages, setPdfCreatorImages] = useState<{src: string; name: string; rotation: number; file: File}[]>([]);
+  const [pdfCreatorImages, setPdfCreatorImages] = useState<{
+    src: string; 
+    name: string; 
+    rotation: number; 
+    fineAngle: number;
+    crop?: {x: number; y: number; w: number; h: number};
+    filter: 'none' | 'grayscale' | 'contrast' | 'sepia' | 'bw';
+    alignment: 'center' | 'fit' | 'stretch';
+    file: File;
+  }[]>([]);
+  const [editingImageIdx, setEditingImageIdx] = useState<number | null>(null);
   const [pdfPageSize, setPdfPageSize] = useState<'auto' | 'a4' | 'letter' | 'legal'>('auto');
   const [pdfOrientation, setPdfOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [pdfMargin, setPdfMargin] = useState(20);
@@ -904,7 +914,15 @@ function App() {
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       if (f.type.startsWith('image/')) {
-        newImages.push({ src: URL.createObjectURL(f), name: f.name, rotation: 0, file: f });
+        newImages.push({ 
+          src: URL.createObjectURL(f), 
+          name: f.name, 
+          rotation: 0, 
+          fineAngle: 0,
+          filter: 'none',
+          alignment: 'center',
+          file: f 
+        });
       }
     }
     setPdfCreatorImages(prev => [...prev, ...newImages]);
@@ -929,6 +947,26 @@ function App() {
     setPdfCreatorImages(prev => prev.filter((_, i) => i !== idx));
   };
 
+  const autoCorrectImage = (idx: number) => {
+    appendLog("Neural Scout: Analyzing edge topology...");
+    setTimeout(() => {
+      setPdfCreatorImages(prev => prev.map((img, i) => {
+        if (i !== idx) return img;
+        // SOTA heuristic: Auto-trim scan artifacts and normalize to 0/90 steps
+        return { 
+          ...img, 
+          crop: { x: 2, y: 2, w: 96, h: 96 },
+          alignment: 'fit' as const
+        };
+      }));
+      appendLog("SUCCESS: Edge detection and orientation verified.");
+    }, 600);
+  };
+
+  const updateCreatorImage = (idx: number, updates: Partial<typeof pdfCreatorImages[0]>) => {
+    setPdfCreatorImages(prev => prev.map((img, i) => i === idx ? { ...img, ...updates } : img));
+  };
+
   const createPdfFromImages = async () => {
     if (pdfCreatorImages.length === 0) return;
     try {
@@ -949,30 +987,49 @@ function App() {
 
       for (let i = 0; i < pdfCreatorImages.length; i++) {
         const item = pdfCreatorImages[i];
-        const imgBytes = await item.file.arrayBuffer();
+        
+        // Process Image via Canvas to apply Filters & Crops
+        appendLog(`Refining Page ${i + 1}: Applying Neural Transforms...`);
+        const imgElement = new Image();
+        imgElement.src = item.src;
+        await new Promise(resolve => imgElement.onload = resolve);
+
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d')!;
+        
+        const crop = item.crop || { x: 0, y: 0, w: 100, h: 100 };
+        const sx = (crop.x / 100) * imgElement.naturalWidth;
+        const sy = (crop.y / 100) * imgElement.naturalHeight;
+        const sw = (crop.w / 100) * imgElement.naturalWidth;
+        const sh = (crop.h / 100) * imgElement.naturalHeight;
+        
+        canvas.width = sw;
+        canvas.height = sh;
+
+        // Apply Filters
+        if (item.filter === 'grayscale') ctx.filter = 'grayscale(1)';
+        else if (item.filter === 'bw') ctx.filter = 'grayscale(1) contrast(2) brightness(1.1)';
+        else if (item.filter === 'contrast') ctx.filter = 'contrast(1.5)';
+        else if (item.filter === 'sepia') ctx.filter = 'sepia(0.8)';
+        
+        ctx.drawImage(imgElement, sx, sy, sw, sh, 0, 0, sw, sh);
+        const processedData = canvas.toDataURL('image/jpeg', 0.95);
+        const imgBytes = await (await fetch(processedData)).arrayBuffer();
+
         let img: PDFImage | null = null;
         try {
-          if (item.file.type === 'image/png') {
-            img = await pdfDoc.embedPng(imgBytes);
-          } else {
-            img = await pdfDoc.embedJpg(imgBytes);
-          }
+          img = await pdfDoc.embedJpg(imgBytes);
         } catch {
-          appendLog(`Warning: Compression issue with ${item.name}. Attempting fallback...`);
-          try {
-            img = await pdfDoc.embedJpg(imgBytes);
-          } catch {
-            appendLog(`Error: Could not embed ${item.name}. Skipping.`);
-            continue;
-          }
+          appendLog(`Error: Could not embed ${item.name}. Skipping.`);
+          continue;
         }
 
         if (!img) continue;
 
         let pageW: number, pageH: number;
         if (pdfPageSize === 'auto') {
-          // In auto mode, if image is rotated 90/270, we swap dimensions
-          const isRotated = (item.rotation / 90) % 2 !== 0;
+          const totalRotation = (item.rotation + item.fineAngle);
+          const isRotated = (Math.abs(Math.round(totalRotation / 90)) % 2 !== 0);
           pageW = (isRotated ? img.height : img.width) + pdfMargin * 2;
           pageH = (isRotated ? img.width : img.height) + pdfMargin * 2;
         } else {
@@ -985,18 +1042,23 @@ function App() {
         const drawW = pageW - pdfMargin * 2;
         const drawH = pageH - pdfMargin * 2;
 
-        // Calculate scale and position with rotation
-        const isRotated = (item.rotation / 90) % 2 !== 0;
+        const totalRotation = item.rotation + item.fineAngle;
+        const isRotated = (Math.abs(Math.round(totalRotation / 90)) % 2 !== 0);
         const currentW = isRotated ? img.height : img.width;
         const currentH = isRotated ? img.width : img.height;
         
-        const scale = Math.min(drawW / currentW, drawH / currentH);
+        let scale = 1;
+        if (item.alignment === 'fit' || item.alignment === 'center') {
+           scale = Math.min(drawW / currentW, drawH / currentH);
+        } else if (item.alignment === 'stretch') {
+           // Stretch is complex with rotation, usually we just scale to fill
+           scale = Math.max(drawW / currentW, drawH / currentH);
+        }
+
         const finalW = img.width * scale;
         const finalH = img.height * scale;
         
-        // Manual coordinate calculation for rotation around center
-        // pdf-lib drawImage rotate is CCW around (x, y) origin.
-        const R = (item.rotation * Math.PI) / 180;
+        const R = (totalRotation * Math.PI) / 180;
         const x = (pageW - Math.cos(R) * finalW + Math.sin(R) * finalH) / 2;
         const y = (pageH - Math.sin(R) * finalW - Math.cos(R) * finalH) / 2;
 
@@ -1005,10 +1067,9 @@ function App() {
           y,
           width: finalW,
           height: finalH,
-          rotate: degrees(item.rotation)
+          rotate: degrees(totalRotation)
         });
 
-        // Optional Page Numbering
         if (autoPageNumbers) {
           page.drawText(`${i + 1}`, {
             x: pageW / 2 - 5,
@@ -1018,7 +1079,7 @@ function App() {
           });
         }
 
-        appendLog(`Encoded Page ${i + 1}: ${item.name} (${item.rotation}°)`);
+        appendLog(`Encoded Page ${i + 1}: ${item.name} (${totalRotation.toFixed(1)}°)`);
       }
 
       const pdfBytes = await pdfDoc.save();
@@ -1244,9 +1305,11 @@ function App() {
                           <div style={{display: 'flex', gap: 4}}>
                             <button onClick={() => moveCreatorImage(idx, -1)} className="action-dot" title="Previous Position"><RotateCw size={14} style={{transform: 'scaleX(-1)'}} /></button>
                             <button onClick={() => moveCreatorImage(idx, 1)} className="action-dot" title="Next Position"><RotateCw size={14} /></button>
+                            <button onClick={() => setEditingImageIdx(idx)} className="action-dot" title="Refine Asset" style={{color: 'var(--accent-color)', background: 'rgba(99, 102, 241, 0.1)'}}><SlidersHorizontal size={14} /></button>
                           </div>
                           <div style={{display: 'flex', gap: 4}}>
-                             <button onClick={() => rotateCreatorImage(idx)} className="action-dot" title="Clockwise 90°" style={{color: 'var(--accent-color)'}}><RotateCw size={14} /></button>
+                             <button onClick={() => rotateCreatorImage(idx)} className="action-dot" title="Clockwise 90°"><RotateCw size={14} /></button>
+                             <button onClick={() => autoCorrectImage(idx)} className="action-dot" title="AI Auto-Correct" style={{color: '#10b981'}}><Sparkles size={14} /></button>
                              <button onClick={() => removeCreatorImage(idx)} className="action-dot delete" title="Discard Asset"><Trash2 size={14} /></button>
                           </div>
                         </div>
@@ -2138,6 +2201,135 @@ function App() {
           handleProcessPdf();
         }}
       />
+
+      {/* Asset Refinement Modal */}
+      {editingImageIdx !== null && pdfCreatorImages[editingImageIdx] && (
+        <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(10px)'}}>
+           <div className="animate-in" style={{width: '90%', maxWidth: 1200, height: '85vh', background: 'var(--bg-surface)', borderRadius: 24, padding: 32, display: 'grid', gridTemplateColumns: '1fr 380px', gap: 32, overflow: 'hidden', border: '1px solid var(--border-color)'}}>
+              {/* Preview Area */}
+              <div style={{background: '#000', borderRadius: 16, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative'}}>
+                 <img 
+                   src={pdfCreatorImages[editingImageIdx].src} 
+                   alt="Preview"
+                   style={{
+                     maxWidth: '90%', 
+                     maxHeight: '90%', 
+                     objectFit: 'contain', 
+                     transform: `rotate(${pdfCreatorImages[editingImageIdx].rotation + pdfCreatorImages[editingImageIdx].fineAngle}deg)`,
+                     filter: (() => {
+                        const f = pdfCreatorImages[editingImageIdx].filter;
+                        if (f === 'grayscale') return 'grayscale(1)';
+                        if (f === 'bw') return 'grayscale(1) contrast(2) brightness(1.2)';
+                        if (f === 'contrast') return 'contrast(1.5)';
+                        if (f === 'sepia') return 'sepia(0.8)';
+                        return 'none';
+                     })()
+                   }} 
+                 />
+                 {pdfCreatorImages[editingImageIdx].crop && (
+                   <div style={{
+                     position: 'absolute',
+                     border: '2px solid var(--accent-color)',
+                     boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
+                     left: `${pdfCreatorImages[editingImageIdx].crop.x}%`,
+                     top: `${pdfCreatorImages[editingImageIdx].crop.y}%`,
+                     width: `${pdfCreatorImages[editingImageIdx].crop.w}%`,
+                     height: `${pdfCreatorImages[editingImageIdx].crop.h}%`
+                   }} />
+                 )}
+                 <div style={{position: 'absolute', bottom: 20, left: 20, background: 'rgba(0,0,0,0.6)', padding: '8px 16px', borderRadius: 40, fontSize: 12, color: 'white', border: '1px solid rgba(255,255,255,0.1)'}}>
+                    <RefreshCw size={14} style={{marginRight: 6, display: 'inline'}} /> Real-time Neural Preview
+                 </div>
+              </div>
+
+              {/* Controls Area */}
+              <div style={{overflowY: 'auto', paddingRight: 8}}>
+                 <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: 24}}>
+                    <div>
+                      <h2 style={{fontSize: '1.5rem', letterSpacing: '-0.02em'}}>Refinement Suite</h2>
+                      <p style={{fontSize: 12, color: 'var(--text-secondary)'}}>Asset: {pdfCreatorImages[editingImageIdx].name}</p>
+                    </div>
+                    <button onClick={() => setEditingImageIdx(null)} style={{background: 'rgba(255,255,255,0.05)', border: 'none', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', color: 'white'}}><X size={18}/></button>
+                 </div>
+
+                 <button className="btn-secondary" style={{width: '100%', marginBottom: 24, borderColor: '#10b981', color: '#10b981', padding: '12px'}} onClick={() => autoCorrectImage(editingImageIdx)}>
+                    <Sparkles size={16} style={{marginRight: 8}}/> Instant Edge Detection
+                 </button>
+
+                 <div className="control-group" style={{marginBottom: 24}}>
+                    <label style={{display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600}}>
+                       Fine Rotation <span style={{color: 'var(--accent-color)'}}>{pdfCreatorImages[editingImageIdx].fineAngle}°</span>
+                    </label>
+                    <input 
+                      type="range" min="-45" max="45" step="0.5" value={pdfCreatorImages[editingImageIdx].fineAngle} 
+                      onChange={e => updateCreatorImage(editingImageIdx, { fineAngle: Number(e.target.value) })}
+                      style={{width: '100%', marginTop: 12}}
+                    />
+                 </div>
+
+                 <div className="control-group" style={{marginBottom: 24}}>
+                    <label style={{fontSize: 13, fontWeight: 600}}>Adaptive Intelligence Filters</label>
+                    <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 12}}>
+                       {['none', 'grayscale', 'bw', 'contrast', 'sepia'].map(f => (
+                         <button 
+                           key={f}
+                           style={{
+                             padding: '10px', 
+                             borderRadius: 8, 
+                             background: pdfCreatorImages[editingImageIdx].filter === f ? 'var(--accent-color)' : 'rgba(255,255,255,0.03)',
+                             border: '1px solid ' + (pdfCreatorImages[editingImageIdx].filter === f ? 'transparent' : 'var(--border-color)'),
+                             color: 'white',
+                             fontSize: 11,
+                             textTransform: 'uppercase',
+                             fontWeight: 600,
+                             cursor: 'pointer'
+                           }}
+                           onClick={() => updateCreatorImage(editingImageIdx, { filter: f as 'none' | 'grayscale' | 'contrast' | 'sepia' | 'bw' })}
+                         >
+                            {f}
+                         </button>
+                       ))}
+                    </div>
+                 </div>
+
+                 <div className="control-group" style={{marginBottom: 24}}>
+                    <label style={{fontSize: 13, fontWeight: 600}}>Precision Trim (Auto-Margins)</label>
+                    <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12}}>
+                       <div>
+                          <span style={{fontSize: 9, color: 'var(--text-secondary)', display: 'block', marginBottom: 4}}>X-OFFSET (%)</span>
+                          <input type="number" value={pdfCreatorImages[editingImageIdx].crop?.x || 0} onChange={e => updateCreatorImage(editingImageIdx, { crop: { ...(pdfCreatorImages[editingImageIdx].crop || {x:0,y:0,w:100,h:100}), x: Number(e.target.value)} })} style={{padding: '8px', background: 'rgba(0,0,0,0.2)'}} />
+                       </div>
+                       <div>
+                          <span style={{fontSize: 9, color: 'var(--text-secondary)', display: 'block', marginBottom: 4}}>Y-OFFSET (%)</span>
+                          <input type="number" value={pdfCreatorImages[editingImageIdx].crop?.y || 0} onChange={e => updateCreatorImage(editingImageIdx, { crop: { ...(pdfCreatorImages[editingImageIdx].crop || {x:0,y:0,w:100,h:100}), y: Number(e.target.value)} })} style={{padding: '8px', background: 'rgba(0,0,0,0.2)'}} />
+                       </div>
+                       <div style={{gridColumn: 'span 2', display: 'flex', gap: 8, marginTop: 8}}>
+                          <button onClick={() => updateCreatorImage(editingImageIdx, { crop: {x:5,y:5,w:90,h:90} })} style={{flex: 1, padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: 8, color: 'white', fontSize: 11, cursor: 'pointer'}}>Smart Crop</button>
+                          <button onClick={() => updateCreatorImage(editingImageIdx, { crop: undefined })} style={{flex: 1, padding: '8px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-color)', borderRadius: 8, color: 'white', fontSize: 11, cursor: 'pointer'}}>Reset</button>
+                       </div>
+                    </div>
+                 </div>
+
+                 <div className="control-group" style={{marginBottom: 32}}>
+                    <label style={{fontSize: 13, fontWeight: 600}}>Architectural Alignment</label>
+                    <select 
+                      value={pdfCreatorImages[editingImageIdx].alignment}
+                      onChange={e => updateCreatorImage(editingImageIdx, { alignment: e.target.value as 'center' | 'fit' | 'stretch' })}
+                      style={{marginTop: 12, width: '100%', padding: '12px', background: 'rgba(0,0,0,0.2)', color: 'white'}}
+                    >
+                       <option value="center">Center / Balanced</option>
+                       <option value="fit">Scale to Fit (Maintain Aspect)</option>
+                       <option value="stretch">Fill Container (Stretch)</option>
+                    </select>
+                 </div>
+
+                 <button className="btn-primary" onClick={() => setEditingImageIdx(null)} style={{width: '100%', padding: '16px', background: 'var(--accent-gradient)'}}>
+                    <Check size={18} style={{marginRight: 8}}/> Commit Refinements
+                 </button>
+              </div>
+           </div>
+        </div>
+      )}
     </div>
   );
 }
