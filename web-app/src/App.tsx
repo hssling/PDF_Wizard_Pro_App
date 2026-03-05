@@ -12,9 +12,10 @@ import { Document, Packer, Paragraph, TextRun } from 'docx';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import Tesseract from 'tesseract.js';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-// Setup pdf.js worker natively using CDN
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+// Setup pdf.js worker natively using bundled Vite asset
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'edit' | 'ai_chat' | 'watermark' | 'rotate' | 'protect' | 'content_edit';
 
@@ -63,7 +64,14 @@ function App() {
     try {
       appendLog("Rendering visual previews...");
       const arrayBuffer = await selectedFile.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      
+      const loadingTask = pdfjsLib.getDocument({ 
+        data: arrayBuffer,
+        useWorkerFetch: false, // sometimes helps stability on mobile
+        isEvalSupported: false 
+      });
+      
+      const pdf = await loadingTask.promise;
       const previews: string[] = [];
       const numToShow = Math.min(pdf.numPages, 12);
       
@@ -72,17 +80,30 @@ function App() {
         const viewport = page.getViewport({ scale: 0.6 });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
-        if (!context) continue;
+        
+        if (!context) {
+          appendLog(`Canvas failure on Page ${i}`);
+          continue;
+        }
+
         canvas.height = viewport.height;
         canvas.width = viewport.width;
-        await page.render({ canvasContext: context, viewport: viewport, canvas: canvas }).promise;
-        previews.push(canvas.toDataURL());
+        
+        await page.render({ 
+          canvasContext: context, 
+          viewport: viewport,
+          canvas: canvas
+        }).promise;
+        
+        previews.push(canvas.toDataURL('image/jpeg', 0.8));
       }
+      
       setPreviewImages(previews);
       appendLog(`Successfully generated ${previews.length} page previews.`);
-    } catch (e) {
-      console.error(e);
-      appendLog("Engine Error: Frame buffer rendering failed.");
+    } catch (err: unknown) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : 'Frame buffer failure';
+      appendLog(`Engine Error: ${message}`);
     }
   };
 
@@ -176,7 +197,8 @@ function App() {
         const pdfBytes = await (activeTool === 'split' || activeTool === 'merge' ? newPdf : finalDoc).save({
           useObjectStreams: activeTool === 'compress' ? true : false
         });
-        const pdfBlob = new Blob([pdfBytes as any], { type: 'application/pdf' });
+        // ArrayBufferView is a valid BlobPart, but we cast to satisfy environment mismatches
+        const pdfBlob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' });
         saveAs(pdfBlob, `wizard_output_${activeTool}.pdf`);
         appendLog("Success: Download dispatched.");
       } 
@@ -197,7 +219,11 @@ function App() {
             if (!ctx) continue;
             canvas.height = viewport.height;
             canvas.width = viewport.width;
-            await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+            await page.render({ 
+              canvasContext: ctx, 
+              viewport,
+              canvas: canvas
+            }).promise;
             const data = canvas.toDataURL("image/jpeg", imageQuality).split(',')[1];
             zip.file(`page_${idx+1}.jpg`, data, { base64: true });
             appendLog(`Rendered page ${idx+1} to image buffer.`);
@@ -252,7 +278,11 @@ function App() {
           if (!ctx) return;
           canvas.height = viewport.height;
           canvas.width = viewport.width;
-          await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+          await page.render({ 
+            canvasContext: ctx, 
+            viewport,
+            canvas: canvas
+          }).promise;
           appendLog("OCR Engine: analyzing bitmap data...");
           const { data: { text } } = await Tesseract.recognize(canvas.toDataURL(), 'eng', {
              logger: m => m.status === 'recognizing text' && appendLog(`Neural Scan: ${Math.round(m.progress * 100)}%`)
@@ -263,9 +293,10 @@ function App() {
         }
       }
 
-    } catch (e) {
-      console.error(e);
-      appendLog(`CRITICAL ERROR: ${String(e)}`);
+    } catch (err: unknown) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : 'Processing failure';
+      appendLog(`CRITICAL ERROR: ${message}`);
     } finally {
       setIsProcessing(false);
     }
