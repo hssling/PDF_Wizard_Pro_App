@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { 
-  LayoutDashboard, Merge, Scissors,
-  Type, Zap,
+  LayoutDashboard, Merge, Type, Zap,
   Search, Bell, User, Upload,
   FileImage, RotateCw, ScanText,
-  Plus, Trash2, Settings, Menu, X, LayoutGrid, Lock, PenTool, Sparkles, ShieldAlert, Moon, Sun, ShieldCheck
+  Plus, Trash2, Settings, Menu, X, Lock, PenTool, Sparkles, ShieldAlert, Moon, Sun, ShieldCheck,
+  Edit3, Layers, PlusCircle, Stamp, EyeOff, Brain, Home
 } from 'lucide-react';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -17,7 +17,7 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 // Setup pdf.js worker natively using bundled Vite asset
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'content_edit' | 'organize' | 'protect' | 'rotate' | 'watermark' | 'ai_summary' | 'redact';
+type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'content_edit' | 'organize' | 'protect' | 'rotate' | 'watermark' | 'ai_summary' | 'redact' | 'ai_insight';
 
 interface EditOverlay {
   id: string;
@@ -37,7 +37,8 @@ interface EditOverlay {
 type EditorTool = 'cursor' | 'text' | 'rect' | 'image' | 'signature' | 'whiteout';
 
 function App() {
-  const [activeTool, setActiveTool] = useState<ToolType>('dashboard');
+  const [activeTool, setActiveTool] = useState<ToolType | null>(null);
+  const [activeMode, setActiveMode] = useState<'design' | 'secure' | 'analyze'>('design');
   const [file, setFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [watermarkText, setWatermarkText] = useState('CONFIDENTIAL');
@@ -113,7 +114,8 @@ function App() {
       
       for (let i = 1; i <= numToShow; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2.5 });
+        const ratio = window.devicePixelRatio || 1;
+        const viewport = page.getViewport({ scale: 2.0 * ratio });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         
@@ -124,6 +126,9 @@ function App() {
 
         canvas.height = viewport.height;
         canvas.width = viewport.width;
+        // High-DPI physical-to-CSS mapping
+        canvas.style.width = `${viewport.width / ratio}px`;
+        canvas.style.height = `${viewport.height / ratio}px`;
         
         await page.render({ 
           canvasContext: context, 
@@ -131,7 +136,7 @@ function App() {
           canvas: canvas
         }).promise;
         
-        previews.push(canvas.toDataURL('image/jpeg', 0.8));
+        previews.push(canvas.toDataURL('image/jpeg', 0.9));
       }
       
       setPreviewImages(previews);
@@ -320,13 +325,14 @@ function App() {
     setIsProcessing(true);
     setSummaryData(null);
     appendLog("AI Engine: Initializing deep semantic scanning...");
+    appendLog("Recursive Scan: Initiating deep-level document traversal...");
     
     try {
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       let allText = "";
       
-      for (let i = 1; i <= Math.min(pdf.numPages, 10); i++) {
+      for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
         allText += (content.items as {str: string}[]).map(it => it.str).join(' ') + " ";
@@ -362,6 +368,7 @@ function App() {
     setIsProcessing(true);
     setScannedPII([]);
     appendLog("Sanitizer Engine: Initiating deep pattern matching for PII/Sensitive Data...");
+    appendLog("Recursive Scan: Initiating deep-level document traversal...");
     
     try {
       const arrayBuffer = await file.arrayBuffer();
@@ -375,7 +382,7 @@ function App() {
         "Phone": /\b(?:\+?\d{1,3}[- ]?)?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}\b/g
       };
 
-      for (let i = 1; i <= Math.min(pdf.numPages, 20); i++) {
+      for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
         const text = (content.items as {str: string}[]).map(it => it.str).join(' ');
@@ -429,7 +436,7 @@ function App() {
       const arrayBuffer = await file.arrayBuffer();
 
       // CATEGORY A: Structural Modifications (pdf-lib)
-      if (['split', 'merge', 'watermark', 'rotate', 'protect', 'compress', 'content_edit'].includes(activeTool)) {
+      if (['split', 'merge', 'watermark', 'rotate', 'protect', 'compress', 'content_edit'].includes(activeTool || '')) {
         appendLog("WASM-Core: Parsing PDF structure...");
         const srcDoc = await PDFDocument.load(arrayBuffer);
         const newPdf = await PDFDocument.create();
@@ -614,7 +621,7 @@ function App() {
       } 
       
       // CATEGORY B: Complex Conversions (pdf.js + docx/jszip)
-      else if (activeTool === 'convert_jpg' || activeTool === 'convert_word' || activeTool === 'ocr' || activeTool === 'extract_text') {
+      else if (['convert_jpg', 'convert_word', 'ocr', 'extract_text'].includes(activeTool || '')) {
         appendLog("RasterEngine: spinning up PDF worker...");
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         
@@ -730,82 +737,63 @@ function App() {
   return (
     <div className={`app-container ${sidebarOpen ? 'sidebar-open' : ''}`}>
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <div className="sidebar-header">
-          <div className="brand" onClick={() => { setActiveTool('dashboard'); setSidebarOpen(false); }} style={{cursor: 'pointer'}}>
-            <Zap size={20} className="text-accent" />
-            <span className="brand-text">PDF Wizard Pro</span>
-          </div>
-          <button className="mobile-close" onClick={() => setSidebarOpen(false)}>
-            <X size={24} />
-          </button>
+        <div className="brand" onClick={() => { setActiveTool(null); setActiveMode('design'); setSidebarOpen(false); }} style={{cursor: 'pointer'}}>
+          <Zap size={24} className="text-accent" />
+          <span className="brand-text">WIZARDPRO</span>
         </div>
 
-        <nav className="nav-container">
-          <div className="nav-section">
-            <div className="nav-title">Primary</div>
-            <button className={`nav-item ${activeTool === 'dashboard' ? 'active' : ''}`} onClick={() => { setActiveTool('dashboard'); setSidebarOpen(false); }}>
-              <LayoutDashboard size={18} /> Dashboard
-            </button>
-            <button className={`nav-item ${activeTool === 'organize' ? 'active' : ''}`} onClick={() => { setActiveTool('organize'); setSidebarOpen(false); }}>
-              <LayoutGrid size={18} /> Organize Pages
-            </button>
-            <button className={`nav-item ${activeTool === 'content_edit' ? 'active' : ''}`} onClick={() => { setActiveTool('content_edit'); setSidebarOpen(false); }}>
-              <Plus size={18} /> Content Editor
-            </button>
-            <button className={`nav-item ${activeTool === 'ai_summary' ? 'active' : ''}`} onClick={() => { setActiveTool('ai_summary'); setSidebarOpen(false); }}>
-              <Sparkles size={18} /> AI Insight
-            </button>
+        <div className="nav-section">
+          <div className="mode-tabs" style={{display: 'flex', gap: 4, padding: '0 16px 20px', borderBottom: '1px solid var(--border-color)', marginBottom: 20}}>
+            <button className={`mode-btn ${activeMode === 'design' ? 'active' : ''}`} onClick={() => setActiveMode('design')}>D</button>
+            <button className={`mode-btn ${activeMode === 'secure' ? 'active' : ''}`} onClick={() => setActiveMode('secure')}>S</button>
+            <button className={`mode-btn ${activeMode === 'analyze' ? 'active' : ''}`} onClick={() => setActiveMode('analyze')}>A</button>
           </div>
 
-          <div className="nav-section">
-            <div className="nav-title">Structure</div>
-            <button className={`nav-item ${activeTool === 'split' ? 'active' : ''}`} onClick={() => { setActiveTool('split'); setSidebarOpen(false); }}>
-              <Scissors size={18} /> Extract Pages
-            </button>
-            <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => { setActiveTool('merge'); setSidebarOpen(false); }}>
-              <Merge size={18} /> Merge Docs
-            </button>
-            <button className={`nav-item ${activeTool === 'rotate' ? 'active' : ''}`} onClick={() => { setActiveTool('rotate'); setSidebarOpen(false); }}>
-              <RotateCw size={18} /> Rotate
-            </button>
-          </div>
+          <div className="nav-title">{activeMode.toUpperCase()} SUITE</div>
+          
+          {activeMode === 'design' && (
+            <div className="nav-group">
+              <button className={`nav-item ${activeTool === 'content_edit' ? 'active' : ''}`} onClick={() => { setActiveTool('content_edit'); setSidebarOpen(false); }}>
+                <Edit3 size={18} /> Content Editor
+              </button>
+              <button className={`nav-item ${activeTool === 'organize' ? 'active' : ''}`} onClick={() => { setActiveTool('organize'); setSidebarOpen(false); }}>
+                <Layers size={18} /> Page Manager
+              </button>
+              <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => { setActiveTool('merge'); setSidebarOpen(false); }}>
+                <PlusCircle size={18} /> Neural Link
+              </button>
+              <button className={`nav-item ${activeTool === 'watermark' ? 'active' : ''}`} onClick={() => { setActiveTool('watermark'); setSidebarOpen(false); }}>
+                <Stamp size={18} /> Master Stamp
+              </button>
+            </div>
+          )}
 
-          <div className="nav-section">
-            <div className="nav-title">Innovation Suite</div>
-            <button className={`nav-item ${activeTool === 'ai_summary' ? 'active' : ''}`} onClick={() => { setActiveTool('ai_summary'); setSidebarOpen(false); }}>
-              <Sparkles size={18} /> Deep Insight
-            </button>
-            <button className={`nav-item ${activeTool === 'redact' ? 'active' : ''}`} onClick={() => { setActiveTool('redact'); setSidebarOpen(false); }}>
-              <ShieldAlert size={18} /> PII Sanitizer
-            </button>
-            <button className={`nav-item ${activeTool === 'ocr' ? 'active' : ''}`} onClick={() => { setActiveTool('ocr'); setSidebarOpen(false); }}>
-              <ScanText size={18} /> Neural OCR
-            </button>
-          </div>
+          {activeMode === 'secure' && (
+            <div className="nav-group">
+              <button className={`nav-item ${activeTool === 'redact' ? 'active' : ''}`} onClick={() => { setActiveTool('redact'); setSidebarOpen(false); }}>
+                <EyeOff size={18} /> PII Redactor
+              </button>
+              <button className={`nav-item ${activeTool === 'protect' ? 'active' : ''}`} onClick={() => { setActiveTool('protect'); setSidebarOpen(false); }}>
+                <Lock size={18} /> Encrypt Vault
+              </button>
+            </div>
+          )}
 
-          <div className="nav-section">
-            <div className="nav-title">Core Operations</div>
-            <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => { setActiveTool('merge'); setSidebarOpen(false); }}>
-              <Merge size={18} /> Batch Merge
-            </button>
-            <button className={`nav-item ${activeTool === 'split' ? 'active' : ''}`} onClick={() => { setActiveTool('split'); setSidebarOpen(false); }}>
-              <Scissors size={18} /> Page Extraction
-            </button>
-            <button className={`nav-item ${activeTool === 'compress' ? 'active' : ''}`} onClick={() => { setActiveTool('compress'); setSidebarOpen(false); }}>
-              <Zap size={18} /> optimization
-            </button>
-          </div>
+          {activeMode === 'analyze' && (
+            <div className="nav-group">
+              <button className={`nav-item ${activeTool === 'ai_insight' ? 'active' : ''}`} onClick={() => { setActiveTool('ai_insight'); setSidebarOpen(false); }}>
+                <Brain size={18} /> AI Scout
+              </button>
+              <button className={`nav-item ${activeTool === 'ocr' ? 'active' : ''}`} onClick={() => { setActiveTool('ocr'); setSidebarOpen(false); }}>
+                <ScanText size={18} /> OCR Recovery
+              </button>
+            </div>
+          )}
 
-          <div className="nav-section">
-            <div className="nav-title">Security & Crypto</div>
-            <button className={`nav-item ${activeTool === 'protect' ? 'active' : ''}`} onClick={() => { setActiveTool('protect'); setSidebarOpen(false); }}>
-              <Lock size={18} /> AES Lock
-            </button>
-            <button className={`nav-item ${activeTool === 'watermark' ? 'active' : ''}`} onClick={() => { setActiveTool('watermark'); setSidebarOpen(false); }}>
-              <ShieldAlert size={18} /> Dynamic Stamp
-            </button>
-          </div>
-        </nav>
+          <button className="nav-item home-btn" onClick={() => { setActiveTool(null); setSidebarOpen(false); }} style={{marginTop: 32}}>
+            <Home size={18} /> Command Center
+          </button>
+        </div>
       </aside>
 
       <main className="main-content">
@@ -988,7 +976,7 @@ function App() {
                                setEditOverlays(prev => [...prev, newOverlay]);
                                setActiveTool('content_edit');
                                setSelectedPage(item.page);
-                            }}>Apply Blackout</button>
+                             }}>Apply Blackout</button>
                           </div>
                         ))}
                      </div>
@@ -996,7 +984,7 @@ function App() {
                 </div>
               )}
 
-              {['dashboard', 'organize', 'ai_summary', 'redact'].includes(activeTool) === false && (
+              {['dashboard', 'organize', 'ai_summary', 'redact'].includes((activeTool || '') as any) === false && (
                 <div className="editor-layout">
                   <div className="preview-strip">
                     {previewImages.map((img, i) => (
@@ -1189,22 +1177,22 @@ function App() {
                     )}
 
 
-                    {activeTool === 'protect' && (
-                      <div className="control-group">
-                        <label>Security Key</label>
-                        <input 
-                          type="password" 
-                          value={pdfPassword} 
-                          onChange={e => setPdfPassword(e.target.value)} 
-                          placeholder="Enter decryption password"
-                          className="property-input"
-                        />
-                         <p style={{fontSize: 10, color: '#666', marginTop: 4}}>This password will be required to open the document.</p>
-                      </div>
-                    )}
+                     {(activeTool || '') === 'protect' && (
+                       <div className="control-group">
+                         <label>Security Key</label>
+                         <input 
+                           type="password" 
+                           value={pdfPassword} 
+                           onChange={e => setPdfPassword(e.target.value)} 
+                           placeholder="Enter decryption password"
+                           className="property-input"
+                         />
+                          <p style={{fontSize: 10, color: '#666', marginTop: 4}}>This password will be required to open the document.</p>
+                       </div>
+                     )}
 
-                    {['merge', 'split', 'watermark'].includes(activeTool) && (
-                      <div className="control-group">
+                     {['merge', 'split', 'watermark'].includes((activeTool || '') as any) && (
+                       <div className="control-group">
                          <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8}}>
                           <input type="checkbox" checked={autoPageNumbers} onChange={e => setAutoPageNumbers(e.target.checked)} /> 
                           Auto-Inject Page Numbers
@@ -1217,7 +1205,7 @@ function App() {
                     )}
 
                     <div style={{marginTop: 20, borderTop: '1px solid var(--border-color)', paddingTop: 20}}>
-                      {(['split', 'rotate', 'watermark', 'convert_jpg'].includes(activeTool)) && (
+                      {(['split', 'rotate', 'watermark', 'convert_jpg'].includes((activeTool || '') as any)) && (
                       <div className="control-group">
                         <label>Page Range Selection</label>
                         <input value={pageRange} onChange={e => setPageRange(e.target.value)} placeholder="e.g. 1,3-5,all" />
@@ -1338,7 +1326,7 @@ function App() {
                         <p style={{fontSize: 10, color: '#666', marginTop: 4}}>Auto-adjusts exposure for blurry scans.</p>
                       </div>
                     )}
-                    {(['convert_word', 'extract_text'].includes(activeTool)) && (
+                    {(['convert_word', 'extract_text'].includes((activeTool || '') as any)) && (
                       <div className="control-group">
                          <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer'}}>
                           <input type="checkbox" checked={layoutPreservation} onChange={e => setLayoutPreservation(e.target.checked)} /> 
@@ -1445,7 +1433,13 @@ const SignaturePadModal = ({
   );
 };
 
-const SecurityVaultModal = ({ show, onClose, onConfirm }: any) => {
+interface SecurityVaultModalProps {
+  show: boolean;
+  onClose: () => void;
+  onConfirm: (pass: string) => void;
+}
+
+const SecurityVaultModal = ({ show, onClose, onConfirm }: SecurityVaultModalProps) => {
   const [pass, setPass] = useState('');
   if (!show) return null;
   return (
