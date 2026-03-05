@@ -1445,6 +1445,11 @@ function App() {
                       <h3 className="tool-title">Neural OCR</h3>
                       <p className="tool-desc">AI-powered character recovery from flattened bitmaps.</p>
                     </div>
+                    <div className="tool-card" onClick={() => setActiveTool('ai_insight')}>
+                      <div className="tool-icon-wrapper"><Brain /></div>
+                      <h3 className="tool-title">AI Analysis</h3>
+                      <p className="tool-desc">Semantic document blueprints and cognitive insight generation.</p>
+                    </div>
                     <div className="tool-card" onClick={() => setActiveTool('merge')}>
                       <div className="tool-icon-wrapper"><Merge /></div>
                       <h3 className="tool-title">Smart Fusion</h3>
@@ -1546,7 +1551,7 @@ function App() {
                 </div>
               )}
 
-              {activeTool === 'ai_summary' && (
+              {activeTool === 'ai_insight' && (
                 <div className="ai-dashboard">
                    <div className="ai-hero">
                      <div className="ai-badge">Neural Intelligence Layer</div>
