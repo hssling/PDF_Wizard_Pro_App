@@ -6,7 +6,8 @@ import {
   Plus, Trash2, Settings, Menu, X, Lock, PenTool, Sparkles, ShieldAlert, Moon, Sun, ShieldCheck,
   Edit3, Layers, Stamp, EyeOff, Brain, Home, Scissors, Download, SlidersHorizontal, Check, RefreshCw,
   MousePointer2, Hand, Pen, Pencil, Eraser, Highlighter, Square, Circle, Minus, ArrowRight,
-  MessageSquare, ZoomIn, ZoomOut, Undo2, Redo2
+  MessageSquare, ZoomIn, ZoomOut, Undo2, Redo2,
+  Hash, CheckSquare, TextSelect, Ruler
 } from 'lucide-react';
 import { PDFDocument, rgb, degrees, PDFImage } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -19,11 +20,11 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 // Setup pdf.js worker natively using bundled Vite asset
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'content_edit' | 'organize' | 'protect' | 'rotate' | 'watermark' | 'ai_summary' | 'redact' | 'ai_insight' | 'create_pdf';
+type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'content_edit' | 'organize' | 'protect' | 'rotate' | 'watermark' | 'ai_summary' | 'redact' | 'ai_insight' | 'create_pdf' | 'bates' | 'form_builder';
 
 interface EditOverlay {
   id: string;
-  type: 'text' | 'rect' | 'circle' | 'line' | 'arrow' | 'image' | 'signature' | 'highlight' | 'comment' | 'stamp';
+  type: 'text' | 'rect' | 'circle' | 'line' | 'arrow' | 'image' | 'signature' | 'highlight' | 'comment' | 'stamp' | 'measure_length' | 'form_text' | 'form_check';
   page: number;
   x: number;
   y: number;
@@ -56,7 +57,8 @@ interface TextItem {
 type EditorTool = 
   | 'cursor' | 'hand' | 'text' | 'pen' | 'pencil' | 'eraser'
   | 'highlighter' | 'rect' | 'circle' | 'line' | 'arrow'
-  | 'image' | 'signature' | 'whiteout' | 'stamp' | 'comment';
+  | 'image' | 'signature' | 'whiteout' | 'stamp' | 'comment'
+  | 'measure_length' | 'form_text' | 'form_check';
 
 function App() {
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
@@ -103,6 +105,12 @@ function App() {
   const [colorMode, setColorMode] = useState<'color' | 'grayscale'>('color');
   const [extractMode, setExtractMode] = useState<'single' | 'individual'>('single');
   const [ocrPreProcess, setOcrPreProcess] = useState(true);
+
+  // Professional Features States
+  const [batesPrefix, setBatesPrefix] = useState('EXHIBIT-');
+  const [batesStartNumber, setBatesStartNumber] = useState(1);
+  const [batesPadding, setBatesPadding] = useState(4);
+  const [measurementScale, setMeasurementScale] = useState(1); // 1 px = 1 unit
   const [layoutPreservation, setLayoutPreservation] = useState(true);
   const [allowPrinting, setAllowPrinting] = useState(true);
 
@@ -390,6 +398,9 @@ function App() {
         case 'stamp': return 'stamp' as const;
         case 'image': return 'image' as const;
         case 'signature': return 'signature' as const;
+        case 'measure_length': return 'measure_length' as const;
+        case 'form_text': return 'form_text' as const;
+        case 'form_check': return 'form_check' as const;
         default: return 'text' as const;
       }
     })();
@@ -400,12 +411,12 @@ function App() {
       page: selectedPage,
       x: x - (activeEditorTool === 'text' ? 0 : 50),
       y: y - (activeEditorTool === 'text' ? 10 : 25),
-      text: activeEditorTool === 'text' ? 'Double-click to type...' : activeEditorTool === 'comment' ? 'Add note...' : activeEditorTool === 'stamp' ? 'APPROVED' : '',
+      text: activeEditorTool === 'text' ? 'Double-click to type...' : activeEditorTool === 'comment' ? 'Add note...' : activeEditorTool === 'stamp' ? 'APPROVED' : activeEditorTool === 'form_text' ? 'Form Field' : '',
       fontSize: currentFontSize,
-      color: activeEditorTool === 'whiteout' ? '#FFFFFF' : activeEditorTool === 'highlighter' ? 'rgba(255,255,0,0.4)' : currentColor,
+      color: activeEditorTool === 'whiteout' ? '#FFFFFF' : activeEditorTool === 'highlighter' ? 'rgba(255,255,0,0.4)' : activeEditorTool === 'measure_length' ? '#0ea5e9' : currentColor,
       fontFamily: currentFontFamily,
-      width: activeEditorTool === 'text' ? undefined : activeEditorTool === 'line' || activeEditorTool === 'arrow' ? 200 : 150,
-      height: activeEditorTool === 'text' ? undefined : activeEditorTool === 'line' || activeEditorTool === 'arrow' ? 4 : 80,
+      width: activeEditorTool === 'text' ? undefined : activeEditorTool === 'line' || activeEditorTool === 'arrow' || activeEditorTool === 'measure_length' ? 200 : activeEditorTool === 'form_text' ? 150 : activeEditorTool === 'form_check' ? 24 : 150,
+      height: activeEditorTool === 'text' ? undefined : activeEditorTool === 'line' || activeEditorTool === 'arrow' || activeEditorTool === 'measure_length' ? 4 : activeEditorTool === 'form_text' ? 32 : activeEditorTool === 'form_check' ? 24 : 80,
       opacity: activeEditorTool === 'highlighter' ? 0.4 : 1,
     };
 
@@ -788,6 +799,8 @@ function App() {
         } else if (activeTool === 'content_edit') {
           appendLog("Applying visual overlays and text injections...");
           const pages = srcDoc.getPages();
+          const form = srcDoc.getForm(); // Initialize AcroForm builder
+          
           for (const overlay of editOverlays) {
             const page = pages[overlay.page - 1];
             if (!page) continue;
@@ -820,6 +833,36 @@ function App() {
                 y: height - overlay.y - (overlay.height || 100),
                 width: overlay.width || 150,
                 height: overlay.height || 100
+              });
+            } else if (overlay.type === 'form_text') {
+              try {
+                const field = form.createTextField(`field_${overlay.id}`);
+                field.setText(overlay.text || '');
+                field.addToPage(page, {
+                  x: overlay.x,
+                  y: height - overlay.y - (overlay.height || 32),
+                  width: overlay.width || 150,
+                  height: overlay.height || 32
+                });
+              } catch (e) { appendLog('Form Text Error: Field already exists block.'); }
+            } else if (overlay.type === 'form_check') {
+              try {
+                const field = form.createCheckBox(`check_${overlay.id}`);
+                if (overlay.text === 'checked') field.check();
+                field.addToPage(page, {
+                  x: overlay.x,
+                  y: height - overlay.y - (overlay.height || 24),
+                  width: overlay.width || 24,
+                  height: overlay.height || 24
+                });
+              } catch (e) { appendLog('Form Check Error: Field already exists block.'); }
+            } else if (overlay.type === 'measure_length') {
+              const bA = rgb(0.05, 0.64, 0.91);
+              page.drawLine({ start: { x: overlay.x, y: height - overlay.y - 12 }, end: { x: overlay.x + (overlay.width || 200), y: height - overlay.y - 12 }, thickness: 2, color: bA });
+              page.drawLine({ start: { x: overlay.x, y: height - overlay.y - 17 }, end: { x: overlay.x, y: height - overlay.y - 7 }, thickness: 2, color: bA });
+              page.drawLine({ start: { x: overlay.x + (overlay.width || 200), y: height - overlay.y - 17 }, end: { x: overlay.x + (overlay.width || 200), y: height - overlay.y - 7 }, thickness: 2, color: bA });
+              page.drawText(`${((overlay.width || 0) * measurementScale).toFixed(2)} units`, {
+                x: overlay.x + ((overlay.width || 200) / 2) - 30, y: height - overlay.y + 2, size: 10, color: bA
               });
             }
           }
@@ -921,6 +964,22 @@ function App() {
           // We apply a "Soft Lock" metadata flag for this layer.
           srcDoc.setSubject(`Protected by WizardPro: ${new Date().toISOString()}`);
           srcDoc.setKeywords(['encrypted', 'protected']);
+        } else if (activeTool === 'bates') {
+          appendLog(`Applying Bates Numbering Sequence (Start: ${batesStartNumber})...`);
+          const pages = srcDoc.getPages();
+          let currentBates = batesStartNumber;
+          
+          pages.forEach((page) => {
+             const batesString = `${batesPrefix}${String(currentBates).padStart(batesPadding, '0')}`;
+             page.drawText(batesString, {
+                x: page.getWidth() - 150,
+                y: 20,
+                size: 12,
+                color: rgb(0, 0, 0)
+             });
+             currentBates++;
+          });
+          appendLog(`Successfully stamped ${pages.length} logic pages with Bates sequences.`);
         } else {
           const targetIndices = parsePageRange(pageRange, srcDoc.getPageCount());
           const pages = srcDoc.getPages();
@@ -1334,6 +1393,12 @@ function App() {
               </button>
               <button className={`nav-item ${activeTool === 'create_pdf' ? 'active' : ''}`} onClick={() => { setActiveTool('create_pdf'); setSidebarOpen(false); }}>
                 <Plus size={18} /> Create PDF
+              </button>
+              <button className={`nav-item ${activeTool === 'bates' ? 'active' : ''}`} onClick={() => { setActiveTool('bates'); setSidebarOpen(false); }}>
+                <Hash size={18} /> Bates Numbering
+              </button>
+              <button className={`nav-item ${activeTool === 'content_edit' && (activeEditorTool === 'form_text' || activeEditorTool === 'form_check') ? 'active' : ''}`} onClick={() => { setActiveTool('content_edit'); setActiveEditorTool('form_text'); setSidebarOpen(false); }}>
+                <CheckSquare size={18} /> Form Builder
               </button>
             </div>
           )}
@@ -1824,7 +1889,44 @@ function App() {
                 </div>
               )}
 
-              {['dashboard', 'organize', 'ai_summary', 'redact', 'create_pdf', 'ai_insight', 'merge', 'split'].includes((activeTool || '') as string) === false && (
+              {activeTool === 'bates' && (
+                <div style={{padding: '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
+                  <div className="workspace-header" style={{margin: '0 0 32px 0', border: 'none'}}>
+                    <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Bates Numbering</h1>
+                    <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>Sequential alphanumeric indexing for legal and medical documentation.</p>
+                  </div>
+                  
+                  <div className="ai-stats" style={{gridTemplateColumns: 'minmax(300px, 1fr)'}}>
+                    <div className="ai-card" style={{padding: 32}}>
+                      <div style={{display: 'flex', gap: 24, flexWrap: 'wrap'}}>
+                        <div className="control-group" style={{flex: 1}}>
+                          <label>Prefix Identity</label>
+                          <input type="text" value={batesPrefix} onChange={e => setBatesPrefix(e.target.value)} placeholder="EXHIBIT-" style={{fontSize: '1.1rem', padding: '12px 18px'}} />
+                        </div>
+                        <div className="control-group" style={{width: 120}}>
+                          <label>Start Number</label>
+                          <input type="number" value={batesStartNumber} onChange={e => setBatesStartNumber(Number(e.target.value))} min={1} style={{fontSize: '1.1rem', padding: '12px 18px'}} />
+                        </div>
+                        <div className="control-group" style={{width: 120}}>
+                          <label>Padding Left</label>
+                          <input type="number" value={batesPadding} onChange={e => setBatesPadding(Number(e.target.value))} min={1} max={10} style={{fontSize: '1.1rem', padding: '12px 18px'}} />
+                        </div>
+                      </div>
+                      
+                      <div className="insight-card" style={{marginTop: 24, padding: 16, background: 'rgba(0,0,0,0.1)', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                         <span style={{color: 'var(--text-secondary)'}}>Sample Preview Render:</span>
+                         <span style={{fontWeight: 800, fontSize: '1.2rem', fontFamily: 'monospace'}}>{batesPrefix}{String(batesStartNumber).padStart(batesPadding, '0')}</span>
+                      </div>
+
+                      <button className="btn-primary" style={{marginTop: 32, width: '100%', padding: '16px'}} onClick={handleProcessPdf}>
+                         <Stamp size={20} style={{marginRight: 10}} /> Overlay Bates & Generate
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {['dashboard', 'organize', 'ai_summary', 'redact', 'create_pdf', 'ai_insight', 'merge', 'split', 'bates'].includes((activeTool || '') as string) === false && (
                 <div className="editor-layout">
                   <div className="preview-strip">
                     {previewImages.map((img, i) => (
@@ -1860,6 +1962,12 @@ function App() {
                         <button className={`toolbar-btn ${activeEditorTool === 'circle' ? 'active' : ''}`} onClick={() => setActiveEditorTool('circle')} title="Ellipse / Circle"><Circle size={16} /></button>
                         <button className={`toolbar-btn ${activeEditorTool === 'line' ? 'active' : ''}`} onClick={() => setActiveEditorTool('line')} title="Line"><Minus size={16} /></button>
                         <button className={`toolbar-btn ${activeEditorTool === 'arrow' ? 'active' : ''}`} onClick={() => setActiveEditorTool('arrow')} title="Arrow"><ArrowRight size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'measure_length' ? 'active' : ''}`} onClick={() => setActiveEditorTool('measure_length')} title="Measure Dimension/Distance"><Ruler size={16} /></button>
+                        <div className="tool-sep" />
+
+                        {/* Interactive Forms */}
+                        <button className={`toolbar-btn ${activeEditorTool === 'form_text' ? 'active' : ''}`} onClick={() => setActiveEditorTool('form_text')} title="Insert Form Text Field"><TextSelect size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'form_check' ? 'active' : ''}`} onClick={() => setActiveEditorTool('form_check')} title="Insert Checkbox"><CheckSquare size={16} /></button>
                         <div className="tool-sep" />
 
                         {/* Media & Stamps */}
@@ -2096,6 +2204,31 @@ function App() {
                                   {overlay.text || 'APPROVED'}
                                 </div>
                               )}
+                              {overlay.type === 'measure_length' && (
+                                <div style={{ width: '100%', height: 2, background: overlay.color, position: 'absolute', top: '50%' }}>
+                                  <div style={{position: 'absolute', left: 0, top: -4, width: 2, height: 10, background: overlay.color}} />
+                                  <div style={{position: 'absolute', right: 0, top: -4, width: 2, height: 10, background: overlay.color}} />
+                                  <div style={{position: 'absolute', top: -20, left: '50%', transform: 'translateX(-50%)', background: overlay.color, color: 'white', fontSize: 10, padding: '2px 6px', borderRadius: 4, whiteSpace: 'nowrap'}}>
+                                    {( (overlay.width || 0) * measurementScale ).toFixed(2)} units
+                                  </div>
+                                </div>
+                              )}
+                              {overlay.type === 'form_text' && (
+                                <div style={{width: '100%', height: '100%', border: '1px solid #94a3b8', background: 'rgba(241, 245, 249, 0.5)', display: 'flex', alignItems: 'center', padding: '0 8px'}}>
+                                  <input 
+                                    value={overlay.text} 
+                                    onMouseDown={e => e.stopPropagation()}
+                                    onChange={(e) => setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: e.target.value } : o))}
+                                    placeholder="Text Field"
+                                    style={{background: 'transparent', border: 'none', width: '100%', outline: 'none', fontSize: overlay.fontSize || 12, color: '#334155'}}
+                                  />
+                                </div>
+                              )}
+                              {overlay.type === 'form_check' && (
+                                <div style={{width: '100%', height: '100%', border: '2px solid #64748b', borderRadius: 3, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: overlay.text === 'checked' ? '#3b82f6' : 'transparent', borderColor: overlay.text === 'checked' ? '#3b82f6' : '#64748b'}} onClick={(e) => { e.stopPropagation(); setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: overlay.text === 'checked' ? '' : 'checked' } : o)); }}>
+                                  {overlay.text === 'checked' && <Check size={16} color="white" />}
+                                </div>
+                              )}
                               {(overlay.type === 'image' || overlay.type === 'signature') && (
                                 <div style={{width: '100%', height: '100%', position: 'relative'}}>
                                   {overlay.imageContent ? (
@@ -2137,6 +2270,10 @@ function App() {
                         <div className="property-row">
                           <span className="property-label">Def. Color</span>
                           <input type="color" className="property-input" value={currentColor} onChange={e => setCurrentColor(e.target.value)} />
+                        </div>
+                        <div className="property-row">
+                          <span className="property-label">Measure Scale</span>
+                          <input type="number" className="property-input" step="0.1" style={{width: 60}} value={measurementScale} onChange={e => setMeasurementScale(parseFloat(e.target.value))} title="1 pixel = X units" />
                         </div>
                         <div className="property-row">
                           <span className="property-label">Def. Family</span>
