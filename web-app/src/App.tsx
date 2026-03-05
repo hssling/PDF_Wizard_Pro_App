@@ -40,12 +40,17 @@ interface EditOverlay {
 
 interface TextItem {
   str: string;
+  originalStr: string;
   x: number;
   y: number;
   width: number;
   height: number;
   fontName: string;
   fontSize: number;
+  pdfX: number;
+  pdfY: number;
+  pdfWidth: number;
+  pdfFontSize: number;
 }
 
 type EditorTool = 
@@ -255,7 +260,7 @@ function App() {
         const page = await pdf.getPage(i);
         const scale = 1.5; // Optimal scale for readability without over-zoom
         const cssViewport = page.getViewport({ scale });
-        const ratio = window.devicePixelRatio || 1;
+        const ratio = 1; // Locked to 1 to ensure CSS coordinates precisely match PDF canvas overlay
         const renderViewport = page.getViewport({ scale: scale * ratio });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
@@ -285,15 +290,23 @@ function App() {
           for (const item of textContent.items) {
             if ('str' in item && item.str.trim()) {
               const tx = item.transform;
-              const fontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+              const pdfFontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+              const fontSize = pdfFontSize * scale;
+              const pdfX = tx[4];
+              const pdfY = tx[5];
               items.push({
                 str: item.str,
-                x: tx[4] * scale,
-                y: cssViewport.height - (tx[5] * scale) - (fontSize * scale),
+                originalStr: item.str,
+                x: pdfX * scale,
+                y: cssViewport.height - (pdfY * scale) - fontSize,
                 width: (item.width || 0) * scale,
-                height: fontSize * scale * 1.2,
+                height: fontSize * 1.2,
                 fontName: item.fontName || 'sans-serif',
-                fontSize: fontSize * scale,
+                fontSize: fontSize,
+                pdfX: pdfX,
+                pdfY: pdfY,
+                pdfWidth: (item.width || 0),
+                pdfFontSize: pdfFontSize
               });
             }
           }
@@ -763,6 +776,77 @@ function App() {
               });
             }
           }
+
+          // Apply IN-SITU OCR Text Modifications (Overwrite existing layout text)
+          Object.keys(pageTextItems).forEach(pageKey => {
+             const pageNum = parseInt(pageKey);
+             const page = pages[pageNum - 1]; // 0-indexed page in pdf-lib
+             if (!page) return;
+
+             const items = pageTextItems[pageNum];
+             let textEditedCount = 0;
+             items.forEach(item => {
+                if (item.str !== item.originalStr) {
+                   // Blank out the original text
+                   page.drawRectangle({
+                      x: item.pdfX - 2,
+                      y: item.pdfY - 2,
+                      width: item.pdfWidth + (item.pdfWidth * 0.1),
+                      height: item.pdfFontSize * 1.2,
+                      color: rgb(1, 1, 1) // Pure White
+                   });
+                   // Burn the new text
+                   page.drawText(item.str, {
+                      x: item.pdfX,
+                      y: item.pdfY,
+                      size: item.pdfFontSize,
+                      color: rgb(0, 0, 0)
+                   });
+                   textEditedCount++;
+                }
+             });
+             if (textEditedCount > 0) appendLog(`Rebuilt ${textEditedCount} modified text blocks on Page ${pageNum}.`);
+          });
+
+          // Apply Freehand Tools (Pencil, Pen, Eraser, Highlighter)
+          drawPaths.forEach(path => {
+             const page = pages[path.page - 1];
+             if (!page || path.points.length < 2) return;
+             const { height } = page.getSize();
+             const pdfScale = 1.5; // Fixed extraction coordinate scale mapping
+             for (let i = 1; i < path.points.length; i++) {
+                const p1 = path.points[i-1];
+                const p2 = path.points[i];
+                // Convert CSS (top-left) to PDF (bottom-left)
+                const x1 = p1.x / pdfScale;
+                const y1 = height - (p1.y / pdfScale);
+                const x2 = p2.x / pdfScale;
+                const y2 = height - (p2.y / pdfScale);
+                
+                let r=0, g=0, b=0, a=1;
+                if (path.tool === 'highlighter') { r=1; g=1; b=0; a=0.4; } // Yellow highlight
+                else if (path.tool === 'eraser') { r=1; g=1; b=1; } // Pure White eraser
+                else {
+                   const hex = path.color.replace('#','');
+                   if (hex.length === 6) {
+                     r = parseInt(hex.substring(0,2),16)/255;
+                     g = parseInt(hex.substring(2,4),16)/255;
+                     b = parseInt(hex.substring(4,6),16)/255;
+                   }
+                }
+                
+                // Emulate thick line using drawLine 
+                page.drawLine({
+                   start: { x: x1, y: y1 },
+                   end: { x: x2, y: y2 },
+                   thickness: (path.width || 2) / pdfScale,
+                   color: rgb(r, g, b),
+                   opacity: a
+                });
+             }
+          });
+          if (drawPaths.length > 0) appendLog("Committed freehand drawing vectors to binary format.");
+
         } else if (activeTool === 'organize') {
           appendLog(`Reconstructing document from custom sequence (${pageOrder.length} pages)...`);
           const newDoc = await PDFDocument.create();
