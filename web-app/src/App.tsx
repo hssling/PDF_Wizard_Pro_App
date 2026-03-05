@@ -21,13 +21,20 @@ type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | '
 
 interface EditOverlay {
   id: string;
+  type: 'text' | 'rect' | 'image' | 'signature';
   page: number;
   x: number;
   y: number;
-  text: string;
-  fontSize: number;
-  color: string;
+  text?: string;
+  fontSize?: number;
+  color?: string;
+  width?: number;
+  height?: number;
+  imageContent?: string; // base64
+  fontFamily?: string;
 }
+
+type EditorTool = 'cursor' | 'text' | 'rect' | 'image' | 'signature' | 'whiteout';
 
 function App() {
   const [activeTool, setActiveTool] = useState<ToolType>('dashboard');
@@ -46,6 +53,13 @@ function App() {
   const [selectedPage, setSelectedPage] = useState(1);
   const [editOverlays, setEditOverlays] = useState<EditOverlay[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeEditorTool, setActiveEditorTool] = useState<EditorTool>('cursor');
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
+
+  // Innovation Styling Defaults
+  const [currentFontSize, setCurrentFontSize] = useState(14);
+  const [currentColor, setCurrentColor] = useState('#000000');
+  const [currentFontFamily, setCurrentFontFamily] = useState('Helvetica');
 
   // Expanded Innovation States
   const [watermarkType, setWatermarkType] = useState<'stamp' | 'tile'>('stamp');
@@ -114,6 +128,58 @@ function App() {
       const message = err instanceof Error ? err.message : 'Frame buffer failure';
       appendLog(`Engine Error: ${message}`);
     }
+  };
+
+  const addOverlay = (e: React.MouseEvent) => {
+    if (activeEditorTool === 'cursor' || !file) return;
+    
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / 0.6;
+    const y = (e.clientY - rect.top) / 0.6;
+    
+    const newOverlay: EditOverlay = {
+      id: Math.random().toString(36).substr(2, 9),
+      type: (activeEditorTool === 'whiteout' ? 'rect' : activeEditorTool) as 'text' | 'rect' | 'image' | 'signature',
+      page: selectedPage,
+      x,
+      y,
+      text: activeEditorTool === 'text' ? 'New Text' : '',
+      fontSize: currentFontSize,
+      color: activeEditorTool === 'whiteout' ? '#FFFFFF' : currentColor,
+      width: activeEditorTool === 'rect' || activeEditorTool === 'whiteout' ? 100 : 150,
+      height: activeEditorTool === 'rect' || activeEditorTool === 'whiteout' ? 50 : 100,
+      fontFamily: currentFontFamily
+    };
+    
+    setEditOverlays(prev => [...prev, newOverlay]);
+    setSelectedOverlayId(newOverlay.id);
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, id?: string) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      if (id) {
+        setEditOverlays(prev => prev.map(o => o.id === id ? { ...o, imageContent: base64 } : o));
+      } else {
+        const newOverlay: EditOverlay = {
+          id: Math.random().toString(36).substr(2, 9),
+          type: activeEditorTool === 'signature' ? 'signature' : 'image',
+          page: selectedPage,
+          x: 50,
+          y: 50,
+          width: 150,
+          height: 100,
+          imageContent: base64
+        };
+        setEditOverlays(prev => [...prev, newOverlay]);
+        setSelectedOverlayId(newOverlay.id);
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const parsePageRange = (range: string, maxPages: number): number[] => {
@@ -199,18 +265,41 @@ function App() {
         } else if (activeTool === 'content_edit') {
           appendLog("Applying visual overlays and text injections...");
           const pages = srcDoc.getPages();
-          editOverlays.forEach(overlay => {
+          for (const overlay of editOverlays) {
             const page = pages[overlay.page - 1];
-            if (page) {
-              const { height } = page.getSize();
-              page.drawText(overlay.text, {
+            if (!page) continue;
+            const { height } = page.getSize();
+            
+            if (overlay.type === 'text') {
+              page.drawText(overlay.text || '', {
                 x: overlay.x,
-                y: height - overlay.y,
-                size: overlay.fontSize,
-                color: rgb(0,0,0),
+                y: height - overlay.y - (overlay.fontSize || 14),
+                size: overlay.fontSize || 14,
+                color: rgb(0,0,0) // hex to rgb convert later if needed
+              });
+            } else if (overlay.type === 'rect') {
+              page.drawRectangle({
+                x: overlay.x,
+                y: height - overlay.y - (overlay.height || 50),
+                width: overlay.width || 100,
+                height: overlay.height || 50,
+                color: overlay.color === '#FFFFFF' ? rgb(1,1,1) : rgb(0,0,0),
+                opacity: 1
+              });
+            } else if ((overlay.type === 'image' || overlay.type === 'signature') && overlay.imageContent) {
+              const imageBytes = await fetch(overlay.imageContent).then(res => res.arrayBuffer());
+              const img = overlay.imageContent.includes('png') 
+                ? await srcDoc.embedPng(imageBytes) 
+                : await srcDoc.embedJpg(imageBytes);
+              
+              page.drawImage(img, {
+                x: overlay.x,
+                y: height - overlay.y - (overlay.height || 100),
+                width: overlay.width || 150,
+                height: overlay.height || 100
               });
             }
-          });
+          }
         } else if (activeTool === 'protect') {
           appendLog("Injecting protection (stubbed)...");
         } else {
@@ -365,26 +454,7 @@ function App() {
     }
   };
 
-  const addTextOverlay = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (activeTool !== 'content_edit') return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    
-    const pdfX = x / 0.6;
-    const pdfY = y / 0.6;
 
-    const newOverlay: EditOverlay = {
-      id: Math.random().toString(36).substr(2, 9),
-      page: selectedPage,
-      x: pdfX,
-      y: pdfY,
-      text: 'Double click to edit',
-      fontSize: 14,
-      color: '#000000'
-    };
-    setEditOverlays([...editOverlays, newOverlay]);
-  };
 
   return (
     <div className={`app-container ${sidebarOpen ? 'sidebar-open' : ''}`}>
@@ -526,50 +596,71 @@ function App() {
                   </div>
 
                   <div className="editing-center">
-                    <div className="canvas-container" onClick={addTextOverlay}>
+                    {activeTool === 'content_edit' && (
+                      <div className="editor-toolbar">
+                        <button className={`toolbar-btn ${activeEditorTool === 'cursor' ? 'active' : ''}`} onClick={() => setActiveEditorTool('cursor')} title="Select Component"><LayoutDashboard size={18} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'text' ? 'active' : ''}`} onClick={() => setActiveEditorTool('text')} title="Add Text Injection"><Type size={18} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'whiteout' ? 'active' : ''}`} onClick={() => setActiveEditorTool('whiteout')} title="Whiteout / Redaction"><Trash2 size={18} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'image' ? 'active' : ''}`} onClick={() => setActiveEditorTool('image')} title="Insert Image Asset"><FileImage size={18} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'signature' ? 'active' : ''}`} onClick={() => setActiveEditorTool('signature')} title="Insert Digital Signature"><Plus size={18} /></button>
+                      </div>
+                    )}
+
+                    <div className="canvas-container" onClick={addOverlay}>
                       {previewImages[selectedPage - 1] && (
                         <div style={{position: 'relative', display: 'inline-block'}}>
-                          <img src={previewImages[selectedPage - 1]} alt="Current Page" />
+                          <img src={previewImages[selectedPage - 1]} alt="Current Page" draggable={false} />
                           {editOverlays.filter(o => o.page === selectedPage).map(overlay => (
                             <div 
                               key={overlay.id}
+                              className={`overlay-item ${selectedOverlayId === overlay.id ? 'selected' : ''}`}
+                              onClick={(e) => { e.stopPropagation(); setSelectedOverlayId(overlay.id); }}
                               style={{
-                                position: 'absolute',
                                 left: overlay.x * 0.6,
                                 top: overlay.y * 0.6,
-                                color: overlay.color,
-                                fontSize: overlay.fontSize * 0.6,
-                                background: 'rgba(255,255,100,0.3)',
-                                padding: '2px',
-                                cursor: 'move',
+                                width: overlay.width ? overlay.width * 0.6 : 'auto',
+                                height: overlay.height ? overlay.height * 0.6 : 'auto',
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: 4
+                                justifyContent: 'center'
                               }}
                             >
-                              <input 
-                                value={overlay.text} 
-                                onChange={(e) => {
-                                  const next = [...editOverlays];
-                                  const idx = next.findIndex(o => o.id === overlay.id);
-                                  next[idx].text = e.target.value;
-                                  setEditOverlays(next);
-                                }}
-                                style={{background: 'transparent', border: 'none', color: 'inherit', fontSize: 'inherit', outline: 'none'}}
-                              />
-                              <button onClick={(e) => {
-                                e.stopPropagation();
-                                setEditOverlays(editOverlays.filter(o => o.id !== overlay.id));
-                              }}>
-                                <Trash2 size={10} />
-                              </button>
+                              {overlay.type === 'text' && (
+                                <input 
+                                  value={overlay.text} 
+                                  onChange={(e) => {
+                                    setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: e.target.value } : o));
+                                  }}
+                                  style={{
+                                    background: 'transparent', 
+                                    border: 'none', 
+                                    color: overlay.color, 
+                                    fontSize: (overlay.fontSize || 14) * 0.6, 
+                                    fontFamily: overlay.fontFamily,
+                                    outline: 'none',
+                                    width: '100%'
+                                  }}
+                                />
+                              )}
+                              {overlay.type === 'rect' && (
+                                <div className="overlay-rect" style={{ width: '100%', height: '100%', background: overlay.color }}></div>
+                              )}
+                              {(overlay.type === 'image' || overlay.type === 'signature') && (
+                                <div style={{width: '100%', height: '100%', position: 'relative'}}>
+                                  {overlay.imageContent ? (
+                                    <img src={overlay.imageContent} className="overlay-image" style={{width: '100%', height: '100%'}} alt="Overlay" />
+                                  ) : (
+                                    <div style={{fontSize: 10, textAlign: 'center', padding: 10, background: '#eee'}}>Click 'Edit Properties' to upload</div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
                       )}
-                      {activeTool === 'content_edit' && (
-                        <div className="overlay-msg">Click anywhere to add text overlay</div>
-                      )}
+                      <div className="overlay-msg">
+                        {activeEditorTool === 'cursor' ? 'Select an object to edit' : `Click to place ${activeEditorTool}`}
+                      </div>
                     </div>
 
                     <div className="terminal-panel">
@@ -584,7 +675,88 @@ function App() {
                   <div className="controls-panel">
                     <h3><Settings size={18} style={{verticalAlign: 'middle', marginRight: 8}} /> Config</h3>
                     
-                    {(['split', 'rotate', 'watermark', 'convert_jpg'].includes(activeTool)) && (
+                    {activeTool === 'content_edit' && !selectedOverlayId && (
+                      <div className="property-panel" style={{marginBottom: 16}}>
+                        <div className="property-label" style={{marginBottom: 8, fontWeight: 'bold'}}>Global Editor Defaults</div>
+                        <div className="property-row">
+                          <span className="property-label">Def. Font Size</span>
+                          <input type="number" className="property-input" style={{width: 50}} value={currentFontSize} onChange={e => setCurrentFontSize(parseInt(e.target.value))} />
+                        </div>
+                        <div className="property-row">
+                          <span className="property-label">Def. Color</span>
+                          <input type="color" className="property-input" value={currentColor} onChange={e => setCurrentColor(e.target.value)} />
+                        </div>
+                        <div className="property-row">
+                          <span className="property-label">Def. Family</span>
+                          <select className="property-input" value={currentFontFamily} onChange={e => setCurrentFontFamily(e.target.value)}>
+                            <option value="Helvetica">Helvetica</option>
+                            <option value="Courier">Courier</option>
+                            <option value="Times">Times New Roman</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedOverlayId && (
+                      <div className="property-panel">
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
+                          <span style={{fontWeight: 'bold', fontSize: '0.8rem'}}>Property Editor</span>
+                          <button onClick={() => { setEditOverlays(prev => prev.filter(o => o.id !== selectedOverlayId)); setSelectedOverlayId(null); }} style={{color: '#ff4444', background: 'none', border: 'none', cursor: 'pointer'}}><Trash2 size={14} /></button>
+                        </div>
+                        
+                        {editOverlays.find(o => o.id === selectedOverlayId)?.type === 'text' && (
+                          <>
+                            <div className="property-row">
+                              <span className="property-label">Font Size</span>
+                              <input type="number" className="property-input" style={{width: 50}} value={editOverlays.find(o => o.id === selectedOverlayId)?.fontSize} onChange={e => setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { ...o, fontSize: parseInt(e.target.value) } : o))} />
+                            </div>
+                            <div className="property-row">
+                              <span className="property-label">Font Family</span>
+                              <select className="property-input" value={editOverlays.find(o => o.id === selectedOverlayId)?.fontFamily} onChange={e => setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { ...o, fontFamily: e.target.value } : o))}>
+                                <option value="Helvetica">Helvetica</option>
+                                <option value="Courier">Courier</option>
+                                <option value="Times">Times New Roman</option>
+                              </select>
+                            </div>
+                          </>
+                        )}
+
+                        <div className="property-row">
+                          <span className="property-label">X Position</span>
+                          <input type="number" className="property-input" style={{width: 60}} value={Math.round(editOverlays.find(o => o.id === selectedOverlayId)?.x || 0)} onChange={e => setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { ...o, x: parseInt(e.target.value) } : o))} />
+                        </div>
+
+                        {(editOverlays.find(o => o.id === selectedOverlayId)?.type === 'rect' || editOverlays.find(o => o.id === selectedOverlayId)?.type === 'image' || editOverlays.find(o => o.id === selectedOverlayId)?.type === 'signature') && (
+                          <>
+                            <div className="property-row">
+                               <span className="property-label">Width</span>
+                               <input type="number" className="property-input" style={{width: 60}} value={editOverlays.find(o => o.id === selectedOverlayId)?.width} onChange={e => setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { ...o, width: parseInt(e.target.value) } : o))} />
+                            </div>
+                            <div className="property-row">
+                               <span className="property-label">Height</span>
+                               <input type="number" className="property-input" style={{width: 60}} value={editOverlays.find(o => o.id === selectedOverlayId)?.height} onChange={e => setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { ...o, height: parseInt(e.target.value) } : o))} />
+                            </div>
+                          </>
+                        )}
+
+                        {editOverlays.find(o => o.id === selectedOverlayId)?.type === 'rect' && (
+                          <div className="property-row">
+                            <span className="property-label">Rect Color</span>
+                            <input type="color" className="property-input" value={editOverlays.find(o => o.id === selectedOverlayId)?.color} onChange={e => setEditOverlays(prev => prev.map(o => o.id === selectedOverlayId ? { ...o, color: e.target.value } : o))} />
+                          </div>
+                        )}
+
+                        {(editOverlays.find(o => o.id === selectedOverlayId)?.type === 'image' || editOverlays.find(o => o.id === selectedOverlayId)?.type === 'signature') && (
+                          <div className="property-row">
+                             <span className="property-label">Asset Source</span>
+                             <input type="file" className="property-input" style={{fontSize: 10, width: 120}} onChange={(e) => handleImageUpload(e, selectedOverlayId || undefined)} accept="image/*" />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div style={{marginTop: 20, borderTop: '1px solid var(--border-color)', paddingTop: 20}}>
+                      {(['split', 'rotate', 'watermark', 'convert_jpg'].includes(activeTool)) && (
                       <div className="control-group">
                         <label>Page Range Selection</label>
                         <input value={pageRange} onChange={e => setPageRange(e.target.value)} placeholder="e.g. 1,3-5,all" />
@@ -705,7 +877,6 @@ function App() {
                         <p style={{fontSize: 10, color: '#666', marginTop: 4}}>Auto-adjusts exposure for blurry scans.</p>
                       </div>
                     )}
-
                     {(['convert_word', 'extract_text'].includes(activeTool)) && (
                       <div className="control-group">
                          <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer'}}>
@@ -714,6 +885,7 @@ function App() {
                         </label>
                       </div>
                     )}
+                    </div>
 
                     <button className={`btn-primary ${!isProcessing ? 'glow' : ''}`} onClick={handleProcessPdf} disabled={isProcessing} style={{marginTop: 'auto'}}>
                       {isProcessing ? 'Processing Payload...' : 'Execute Task 🔥'}

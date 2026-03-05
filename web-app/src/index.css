@@ -515,3 +515,113 @@ button {
     font-size: 1rem;
   }
 }
+
+/* Floating Editor Toolbar */
+.editor-toolbar {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 40px;
+  padding: 6px;
+  display: flex;
+  gap: 8px;
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  backdrop-filter: blur(8px);
+}
+
+.toolbar-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.toolbar-btn:hover {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent-color);
+}
+
+.toolbar-btn.active {
+  background: var(--accent-gradient);
+  color: white;
+}
+
+.overlay-item {
+  position: absolute;
+  cursor: move;
+  border: 4px solid transparent;
+  transition: border 0.2s;
+}
+
+.overlay-item:hover {
+  border: 4px dashed var(--accent-color);
+}
+
+.overlay-item.selected {
+  border: 4px solid var(--accent-color);
+  box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+}
+
+.overlay-rect {
+  box-sizing: border-box;
+}
+
+.overlay-image {
+  object-fit: contain;
+}
+
+.overlay-msg {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.8);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.property-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(99, 102, 241, 0.05);
+  border-radius: var(--radius-md);
+  margin-top: 16px;
+}
+
+.property-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.property-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.property-input {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 4px;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
