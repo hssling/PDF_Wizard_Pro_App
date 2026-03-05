@@ -4,7 +4,7 @@ import {
   Search, Bell, User, Upload,
   FileImage, RotateCw, ScanText,
   Plus, Trash2, Settings, Menu, X, Lock, PenTool, Sparkles, ShieldAlert, Moon, Sun, ShieldCheck,
-  Edit3, Layers, PlusCircle, Stamp, EyeOff, Brain, Home,
+  Edit3, Layers, Stamp, EyeOff, Brain, Home, Scissors, Download,
   MousePointer2, Hand, Pen, Pencil, Eraser, Highlighter, Square, Circle, Minus, ArrowRight,
   MessageSquare, ZoomIn, ZoomOut, Undo2, Redo2
 } from 'lucide-react';
@@ -19,7 +19,7 @@ import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 // Setup pdf.js worker natively using bundled Vite asset
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
-type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'content_edit' | 'organize' | 'protect' | 'rotate' | 'watermark' | 'ai_summary' | 'redact' | 'ai_insight';
+type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'content_edit' | 'organize' | 'protect' | 'rotate' | 'watermark' | 'ai_summary' | 'redact' | 'ai_insight' | 'create_pdf';
 
 interface EditOverlay {
   id: string;
@@ -876,7 +876,37 @@ function App() {
     }
   };
 
+  // === CREATE PDF FROM IMAGES ===
+  const createPdfFromImages = async (files: FileList) => {
+    try {
+      setIsProcessing(true);
+      appendLog('Creating PDF from images...');
+      const pdfDoc = await PDFDocument.create();
 
+      for (let i = 0; i < files.length; i++) {
+        const imgFile = files[i];
+        const imgBytes = await imgFile.arrayBuffer();
+        let img;
+        if (imgFile.type === 'image/png') {
+          img = await pdfDoc.embedPng(imgBytes);
+        } else {
+          img = await pdfDoc.embedJpg(imgBytes);
+        }
+        const page = pdfDoc.addPage([img.width, img.height]);
+        page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+        appendLog(`Embedded ${imgFile.name} as page ${i + 1}`);
+      }
+
+      const pdfBytes = await pdfDoc.save();
+      const blob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' });
+      saveAs(blob, 'created_from_images.pdf');
+      appendLog(`PDF created with ${files.length} pages. Download started.`);
+    } catch (err) {
+      appendLog(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   return (
     <div className={`app-container ${sidebarOpen ? 'sidebar-open' : ''}`}>
@@ -888,12 +918,12 @@ function App() {
 
         <div className="nav-section">
           <div className="mode-tabs" style={{display: 'flex', gap: 4, padding: '0 16px 20px', borderBottom: '1px solid var(--border-color)', marginBottom: 20}}>
-            <button className={`mode-btn ${activeMode === 'design' ? 'active' : ''}`} onClick={() => setActiveMode('design')}>D</button>
-            <button className={`mode-btn ${activeMode === 'secure' ? 'active' : ''}`} onClick={() => setActiveMode('secure')}>S</button>
-            <button className={`mode-btn ${activeMode === 'analyze' ? 'active' : ''}`} onClick={() => setActiveMode('analyze')}>A</button>
+            <button className={`mode-btn ${activeMode === 'design' ? 'active' : ''}`} onClick={() => setActiveMode('design')}>Edit</button>
+            <button className={`mode-btn ${activeMode === 'secure' ? 'active' : ''}`} onClick={() => setActiveMode('secure')}>Secure</button>
+            <button className={`mode-btn ${activeMode === 'analyze' ? 'active' : ''}`} onClick={() => setActiveMode('analyze')}>Tools</button>
           </div>
 
-          <div className="nav-title">{activeMode.toUpperCase()} SUITE</div>
+          <div className="nav-title">{activeMode === 'design' ? 'EDIT & CREATE' : activeMode === 'secure' ? 'SECURITY' : 'TOOLS & AI'}</div>
           
           {activeMode === 'design' && (
             <div className="nav-group">
@@ -904,10 +934,19 @@ function App() {
                 <Layers size={18} /> Page Manager
               </button>
               <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => { setActiveTool('merge'); setSidebarOpen(false); }}>
-                <PlusCircle size={18} /> Neural Link
+                <Merge size={18} /> Merge PDFs
+              </button>
+              <button className={`nav-item ${activeTool === 'split' ? 'active' : ''}`} onClick={() => { setActiveTool('split'); setSidebarOpen(false); }}>
+                <Scissors size={18} /> Split / Extract Pages
+              </button>
+              <button className={`nav-item ${activeTool === 'rotate' ? 'active' : ''}`} onClick={() => { setActiveTool('rotate'); setSidebarOpen(false); }}>
+                <RotateCw size={18} /> Rotate Pages
               </button>
               <button className={`nav-item ${activeTool === 'watermark' ? 'active' : ''}`} onClick={() => { setActiveTool('watermark'); setSidebarOpen(false); }}>
-                <Stamp size={18} /> Master Stamp
+                <Stamp size={18} /> Watermark / Stamp
+              </button>
+              <button className={`nav-item ${activeTool === 'create_pdf' ? 'active' : ''}`} onClick={() => { setActiveTool('create_pdf'); setSidebarOpen(false); }}>
+                <Plus size={18} /> Create PDF
               </button>
             </div>
           )}
@@ -918,18 +957,30 @@ function App() {
                 <EyeOff size={18} /> PII Redactor
               </button>
               <button className={`nav-item ${activeTool === 'protect' ? 'active' : ''}`} onClick={() => { setActiveTool('protect'); setSidebarOpen(false); }}>
-                <Lock size={18} /> Encrypt Vault
+                <Lock size={18} /> Encrypt / Protect
               </button>
             </div>
           )}
 
           {activeMode === 'analyze' && (
             <div className="nav-group">
-              <button className={`nav-item ${activeTool === 'ai_insight' ? 'active' : ''}`} onClick={() => { setActiveTool('ai_insight'); setSidebarOpen(false); }}>
-                <Brain size={18} /> AI Scout
+              <button className={`nav-item ${activeTool === 'compress' ? 'active' : ''}`} onClick={() => { setActiveTool('compress'); setSidebarOpen(false); }}>
+                <Zap size={18} /> Compress / Reduce
+              </button>
+              <button className={`nav-item ${activeTool === 'convert_jpg' ? 'active' : ''}`} onClick={() => { setActiveTool('convert_jpg'); setSidebarOpen(false); }}>
+                <FileImage size={18} /> Convert to Images
+              </button>
+              <button className={`nav-item ${activeTool === 'convert_word' ? 'active' : ''}`} onClick={() => { setActiveTool('convert_word'); setSidebarOpen(false); }}>
+                <Type size={18} /> Convert to Word
+              </button>
+              <button className={`nav-item ${activeTool === 'extract_text' ? 'active' : ''}`} onClick={() => { setActiveTool('extract_text'); setSidebarOpen(false); }}>
+                <ScanText size={18} /> Extract Text
               </button>
               <button className={`nav-item ${activeTool === 'ocr' ? 'active' : ''}`} onClick={() => { setActiveTool('ocr'); setSidebarOpen(false); }}>
-                <ScanText size={18} /> OCR Recovery
+                <Search size={18} /> OCR Scan
+              </button>
+              <button className={`nav-item ${activeTool === 'ai_insight' ? 'active' : ''}`} onClick={() => { setActiveTool('ai_insight'); setSidebarOpen(false); }}>
+                <Brain size={18} /> AI Analysis
               </button>
             </div>
           )}
@@ -1131,7 +1182,26 @@ function App() {
                 </div>
               )}
 
-              {['dashboard', 'organize', 'ai_summary', 'redact'].includes((activeTool || '') as any) === false && (
+              {/* === CREATE PDF FROM IMAGES === */}
+              {activeTool === 'create_pdf' && (
+                <div className="ai-dashboard">
+                  <div className="ai-hero">
+                    <div className="ai-badge">PDF Creator</div>
+                    <h1>Create PDF from Images</h1>
+                    <p>Select JPG or PNG images to combine into a single PDF document.</p>
+                    <input 
+                      type="file" 
+                      multiple 
+                      accept="image/jpeg,image/png,image/jpg" 
+                      onChange={(e) => e.target.files && createPdfFromImages(e.target.files)}
+                      style={{marginTop: 12}}
+                    />
+                    {isProcessing && <p>Creating PDF...</p>}
+                  </div>
+                </div>
+              )}
+
+              {['dashboard', 'organize', 'ai_summary', 'redact', 'create_pdf', 'ai_insight'].includes((activeTool || '') as string) === false && (
                 <div className="editor-layout">
                   <div className="preview-strip">
                     {previewImages.map((img, i) => (
@@ -1185,6 +1255,45 @@ function App() {
                         <button className="toolbar-btn" onClick={() => setZoomLevel(z => Math.max(25, z - 25))} title="Zoom Out"><ZoomOut size={16} /></button>
                         <span className="zoom-display">{zoomLevel}%</span>
                         <button className="toolbar-btn" onClick={() => setZoomLevel(z => Math.min(400, z + 25))} title="Zoom In"><ZoomIn size={16} /></button>
+                        <div className="tool-sep" />
+
+                        {/* SAVE */}
+                        <button className="toolbar-btn" onClick={handleProcessPdf} title="Save & Download Edited PDF" style={{background: '#10b981', color: 'white', borderRadius: 6, padding: '0 12px', width: 'auto', gap: 4, display: 'flex'}}>
+                          <Download size={14} /> Save
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Tool-specific action bar for non-editor tools */}
+                    {activeTool && activeTool !== 'content_edit' && (
+                      <div className="editor-toolbar" style={{justifyContent: 'space-between'}}>
+                        <div style={{display:'flex', alignItems:'center', gap: 8}}>
+                          <span style={{color: '#e2e8f0', fontWeight: 600, fontSize: 13}}>{
+                            (() => {
+                              const labels: Record<string, string> = {
+                                split: '✂️ Split / Extract Pages',
+                                rotate: '🔄 Rotate Pages',
+                                compress: '⚡ Compress PDF',
+                                convert_jpg: '🖼️ Convert to Images',
+                                convert_word: '📄 Convert to Word',
+                                extract_text: '📝 Extract Text',
+                                watermark: '💧 Watermark / Stamp',
+                                merge: '🔗 Merge PDFs',
+                                protect: '🔒 Encrypt PDF',
+                                ocr: '🔍 OCR Scan',
+                              };
+                              return labels[activeTool || ''] || activeTool;
+                            })()
+                          }</span>
+                        </div>
+                        <button 
+                          className="toolbar-btn" 
+                          onClick={handleProcessPdf}
+                          disabled={isProcessing}
+                          style={{background: '#6366f1', color: 'white', borderRadius: 6, padding: '0 16px', width: 'auto', gap: 4, display: 'flex', fontWeight: 600, fontSize: 12}}
+                        >
+                          {isProcessing ? 'Processing...' : '▶ Process & Download'}
+                        </button>
                       </div>
                     )}
 
