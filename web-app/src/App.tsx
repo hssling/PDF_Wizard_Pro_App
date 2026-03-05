@@ -823,9 +823,12 @@ function App() {
           {!file ? (
             <div className="upload-view">
               <div className="upload-box" onClick={() => document.getElementById('picker')?.click()}>
-                <Upload size={48} className="text-accent mb-4" />
-                <h2 style={{marginBottom: 8}}>Drop PDF to begin editing</h2>
-                <p style={{color: '#666'}}>Advanced processing up to 100MB</p>
+                <Upload size={56} className="text-accent mb-4" />
+                <h2 style={{fontSize: '1.8rem', color: '#0f172a', fontWeight: 800, marginBottom: 12}}>Drop PDF to begin editing</h2>
+                <p style={{color: '#64748b', fontSize: '1.1rem', marginBottom: 32}}>Advanced AI-Ready processing up to 100MB</p>
+                <button className="btn-primary" style={{width: 'auto', padding: '14px 40px', fontSize: '1rem'}} onClick={(e) => { e.stopPropagation(); document.getElementById('picker')?.click(); }}>
+                  Browse Local Files
+                </button>
                 <input id="picker" type="file" hidden onChange={handleFileUpload} accept=".pdf" />
               </div>
             </div>
