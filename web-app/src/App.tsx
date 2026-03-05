@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { 
   FileText, LayoutDashboard, Scissors, Merge, 
-  RefreshCw, MousePointerSquare, Type, Zap,
-  Menu, Search, Bell, User, Upload, Download,
-  Layers, Lock, Unlock, FileImage, Cpu, Droplet, RotateCw
+  RefreshCw, MousePointer, Type, Zap,
+  Search, Bell, User, Upload,
+  Layers, Lock, FileImage, Cpu, Droplet, RotateCw
 } from 'lucide-react';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
 
@@ -75,7 +75,7 @@ function App() {
       }
       
       const pdfBytes = await finalPdf.save();
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       
       const a = document.createElement('a');
@@ -299,7 +299,7 @@ function App() {
                   <p style={{ color: 'var(--text-secondary)', marginBottom: '24px' }}>Maximum file size: 100MB</p>
                   
                   <button className="btn-primary">
-                    <MousePointerSquare size={18} /> Select PDF File
+                    <MousePointer size={18} /> Select PDF File
                   </button>
                   <input 
                     id="file-upload" 
