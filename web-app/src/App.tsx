@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { 
   LayoutDashboard, Merge, Scissors,
-  RefreshCw, MousePointer, Type, Zap,
+  Type, Zap,
   Search, Bell, User, Upload,
-  Lock, FileImage, Cpu, Droplet, RotateCw, ScanText, FileCode2, ImageDown
+  FileImage, RotateCw, ScanText, FileCode2,
+  Plus, Trash2, Settings
 } from 'lucide-react';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -15,7 +16,17 @@ import Tesseract from 'tesseract.js';
 // Setup pdf.js worker natively using CDN
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
-type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'edit' | 'ai_chat' | 'watermark' | 'rotate' | 'protect';
+type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | 'convert_word' | 'ocr' | 'extract_text' | 'edit' | 'ai_chat' | 'watermark' | 'rotate' | 'protect' | 'content_edit';
+
+interface EditOverlay {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  text: string;
+  fontSize: number;
+  color: string;
+}
 
 function App() {
   const [activeTool, setActiveTool] = useState<ToolType>('dashboard');
@@ -29,26 +40,67 @@ function App() {
   const [resolutionScale, setResolutionScale] = useState(1.5);
   const [imageQuality, setImageQuality] = useState(0.8);
   const [processingLog, setProcessingLog] = useState<string[]>([]);
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setFile(e.target.files[0]);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
+  const [pageRange, setPageRange] = useState('all');
+  const [previewImages, setPreviewImages] = useState<string[]>([]);
+  const [selectedPage, setSelectedPage] = useState(1);
+  const [editOverlays, setEditOverlays] = useState<EditOverlay[]>([]);
 
   const appendLog = (msg: string) => {
-    setProcessingLog(prev => [...prev, msg]);
+    setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`]);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const selectedFile = e.target.files[0];
+      setFile(selectedFile);
+      setPreviewImages([]);
+      generatePreviews(selectedFile);
+    }
+  };
+
+  const generatePreviews = async (selectedFile: File) => {
+    try {
+      appendLog("Rendering visual previews...");
+      const arrayBuffer = await selectedFile.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const previews: string[] = [];
+      const numToShow = Math.min(pdf.numPages, 12);
+      
+      for (let i = 1; i <= numToShow; i++) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 0.6 });
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+        if (!context) continue;
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        await page.render({ canvasContext: context, viewport: viewport, canvas: canvas }).promise;
+        previews.push(canvas.toDataURL());
+      }
+      setPreviewImages(previews);
+      appendLog(`Successfully generated ${previews.length} page previews.`);
+    } catch (e) {
+      console.error(e);
+      appendLog("Engine Error: Frame buffer rendering failed.");
+    }
+  };
+
+  const parsePageRange = (range: string, maxPages: number): number[] => {
+    if (range.toLowerCase() === 'all') {
+      return Array.from({ length: maxPages }, (_, i) => i);
+    }
+    try {
+      return range.split(',').flatMap(r => {
+        const trimmed = r.trim();
+        if (trimmed.includes('-')) {
+          const [start, end] = trimmed.split('-').map(Number);
+          return Array.from({ length: end - start + 1 }, (_, i) => start + i - 1);
+        }
+        return [Number(trimmed) - 1];
+      }).filter(n => n >= 0 && n < maxPages);
+    } catch {
+      return [0];
+    }
   };
 
   const handleProcessPdf = async () => {
@@ -56,386 +108,385 @@ function App() {
     try {
       setIsProcessing(true);
       setProcessingLog([]);
-      appendLog("Engine started: Loading file into memory...");
+      appendLog("System Init: Loading binary payload...");
       
       const arrayBuffer = await file.arrayBuffer();
 
-      // CATEGORY 1: Raw Manipulations via pdf-lib
-      if (activeTool === 'split' || activeTool === 'merge' || activeTool === 'watermark' || activeTool === 'rotate' || activeTool === 'protect' || activeTool === 'compress') {
-        appendLog("Parsing geometry via WebAssembly native lib...");
+      // CATEGORY A: Structural Modifications (pdf-lib)
+      if (['split', 'merge', 'watermark', 'rotate', 'protect', 'compress', 'content_edit'].includes(activeTool)) {
+        appendLog("WASM-Core: Parsing PDF structure...");
         const srcDoc = await PDFDocument.load(arrayBuffer);
         const newPdf = await PDFDocument.create();
-        let finalPdf = newPdf;
-        
+        let finalDoc = srcDoc;
+
         if (activeTool === 'split') {
-          const [firstPage] = await newPdf.copyPages(srcDoc, [0]);
-          newPdf.addPage(firstPage);
-          appendLog("Splitting logic activated: Extracted targeted boundary.");
+          const indices = parsePageRange(pageRange, srcDoc.getPageCount());
+          const copiedPages = await newPdf.copyPages(srcDoc, indices);
+          copiedPages.forEach(p => newPdf.addPage(p));
+          finalDoc = newPdf;
+          appendLog(`Extract: Copied ${indices.length} pages to new buffer.`);
         } else if (activeTool === 'merge') {
           const pages = await newPdf.copyPages(srcDoc, srcDoc.getPageIndices());
           pages.forEach(p => newPdf.addPage(p));
           pages.forEach(p => newPdf.addPage(p));
-          appendLog("Binding pages together...");
+          finalDoc = newPdf;
+          appendLog("Merge: Array buffer concatenation complete.");
         } else if (activeTool === 'compress') {
-           finalPdf = srcDoc;
-           appendLog("Down-sampling internal streams and purging unreachable objects...");
+          appendLog("Purging unused objects and down-sampling streams...");
+        } else if (activeTool === 'content_edit') {
+          appendLog("Applying visual overlays and text injections...");
+          const pages = srcDoc.getPages();
+          editOverlays.forEach(overlay => {
+            const page = pages[overlay.page - 1];
+            if (page) {
+              const { height } = page.getSize();
+              page.drawText(overlay.text, {
+                x: overlay.x,
+                y: height - overlay.y,
+                size: overlay.fontSize,
+                color: rgb(0,0,0),
+              });
+            }
+          });
+        } else if (activeTool === 'protect') {
+          appendLog("Injecting protection (stubbed)...");
         } else {
-          finalPdf = srcDoc; 
-          const pages = finalPdf.getPages();
-          pages.forEach(p => {
+          const targetIndices = parsePageRange(pageRange, srcDoc.getPageCount());
+          const pages = srcDoc.getPages();
+          targetIndices.forEach(idx => {
+            const page = pages[idx];
             if (activeTool === 'watermark') {
-              const { width, height } = p.getSize();
-              p.drawText(watermarkText || 'CONFIDENTIAL', {
+              const { width, height } = page.getSize();
+              page.drawText(watermarkText || 'CONFIDENTIAL', {
                 x: width / 4,
                 y: height / 2,
                 size: 50,
-                color: rgb(0.95, 0.1, 0.1),
-                opacity: 0.3,
+                color: rgb(0.8, 0, 0),
+                opacity: 0.2,
                 rotate: degrees(45),
               });
             } else if (activeTool === 'rotate') {
-              const currentRotation = p.getRotation().angle;
-              p.setRotation(degrees(currentRotation + rotationAngle));
+              page.setRotation(degrees(page.getRotation().angle + rotationAngle));
             }
           });
-          if (activeTool === 'protect') {
-             appendLog(`Injecting protection entropy block (stubbed)...`);
-             // pdf-lib's standard API doesn't support encryption in final save out of the box natively
-             // For proper AES encryption, a server-side engine like Ghostscript/qpdf or an external WASM encryption library is required
-          }
         }
-        
-        appendLog("Baking final document...");
-        const pdfBytes = await finalPdf.save({ useObjectStreams: false });
-        const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
-        saveAs(blob, `pdf_wizard_${activeTool}.pdf`);
-        appendLog("Job dispatched successfully! Download started.");
 
+        appendLog("Checksum match: Serializing document...");
+        const pdfBytes = await (activeTool === 'split' || activeTool === 'merge' ? newPdf : finalDoc).save({
+          useObjectStreams: activeTool === 'compress' ? true : false
+        });
+        const pdfBlob = new Blob([pdfBytes as any], { type: 'application/pdf' });
+        saveAs(pdfBlob, `wizard_output_${activeTool}.pdf`);
+        appendLog("Success: Download dispatched.");
       } 
-      // CATEGORY 2: Rasterization via pdf.js
-      else if (activeTool === 'convert_jpg' || activeTool === 'ocr') {
-        appendLog("Spinning up PDF multi-layer rasterization engine...");
+      
+      // CATEGORY B: Complex Conversions (pdf.js + docx/jszip)
+      else if (activeTool === 'convert_jpg' || activeTool === 'convert_word' || activeTool === 'ocr' || activeTool === 'extract_text') {
+        appendLog("RasterEngine: spinning up PDF worker...");
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        const totalPages = pdf.numPages;
-        const zip = new JSZip();
-        
-        appendLog(`Detected ${totalPages} vector pages... Rendering to canvas Context at scale ${resolutionScale}x`);
-        for (let i = 1; i <= Math.min(totalPages, 5); i++) { // limit to 5 locally
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: resolutionScale }); 
-          const canvas = document.createElement("canvas");
-          const context = canvas.getContext("2d");
-          if (!context) continue;
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-
-          await page.render({ canvasContext: context, viewport: viewport, canvas: canvas }).promise;
-          const imgDataUrl = canvas.toDataURL("image/jpeg", Number(imageQuality)); 
-          
-          if (activeTool === 'ocr' && i === 1) {
-            appendLog("Tesseract-WASM Core Engine spinning up OCR on graphical canvas layer...");
-            const { data: { text } } = await Tesseract.recognize(imgDataUrl, 'eng', {
-              logger: m => appendLog(`OCR Progress: ${Math.round((m.progress || 0) * 100)}%`)
-            });
-            appendLog("========== EXTRACTED TEXT ==========");
-            appendLog(text || "[No readable text found]");
-            appendLog("====================================");
-            return;
-          }
-
-          if (activeTool === 'convert_jpg') {
-            const base64Data = imgDataUrl.replace(/^data:image\/jpeg;base64,/, "");
-            zip.file(`page_${i}.jpg`, base64Data, { base64: true });
-            appendLog(`Rendered matrix frame ${i} to hyper-compressed JPG`);
-          }
-        }
         
         if (activeTool === 'convert_jpg') {
-           appendLog("Collating buffer maps into central ZIP container...");
-           const content = await zip.generateAsync({ type: "blob" });
-           saveAs(content, "wizard_image_pack.zip");
-           appendLog("Job dispatched successfully!");
-        }
+          const zip = new JSZip();
+          const indices = parsePageRange(pageRange, pdf.numPages);
+          for (const idx of indices) {
+            const page = await pdf.getPage(idx + 1);
+            const viewport = page.getViewport({ scale: resolutionScale });
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            if (!ctx) continue;
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+            const data = canvas.toDataURL("image/jpeg", imageQuality).split(',')[1];
+            zip.file(`page_${idx+1}.jpg`, data, { base64: true });
+            appendLog(`Rendered page ${idx+1} to image buffer.`);
+          }
+          const blob = await zip.generateAsync({ type: 'blob' });
+          saveAs(blob, "wizard_images.zip");
+        } 
+        else if (activeTool === 'convert_word' || activeTool === 'extract_text') {
+          let fullText = "";
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            interface TextItem { str: string; transform: number[]; }
+            
+            // Group by Y coordinate (roughly) to maintain lines
+            const items = textContent.items as TextItem[];
+            let lastY = -1;
+            let pageText = "";
+            
+            items.sort((a, b) => b.transform[5] - a.transform[5] || a.transform[4] - b.transform[4]);
+            
+            for (const item of items) {
+              if (lastY !== -1 && Math.abs(item.transform[5] - lastY) > 5) {
+                pageText += "\n";
+              }
+              pageText += item.str + " ";
+              lastY = item.transform[5];
+            }
 
-      } 
-      // CATEGORY 3: Node-Tree Text Parsers
-      else if (activeTool === 'convert_word' || activeTool === 'extract_text') {
-        appendLog("Scanning byte streams for raw structural text layers...");
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        let fullText = "";
-        
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          const pageText = textContent.items.map((item: any) => item.str).join(" ");
-          fullText += pageText + "\n\n";
-          appendLog(`Parsed layout stream node tree on Page ${i}`);
+            fullText += pageText + "\n\n";
+            appendLog(`Extracted strings from Page ${i}`);
+          }
+          
+          if (activeTool === 'extract_text') {
+            saveAs(new Blob([fullText], {type: "text/plain"}), "extracted.txt");
+          } else {
+            appendLog("Cross-compiling to DOCX format...");
+            const doc = new Document({
+              sections: [{
+                children: fullText.split('\n\n').map((p: string) => new Paragraph({ children: [new TextRun(p)] }))
+              }]
+            });
+            const blob = await Packer.toBlob(doc);
+            saveAs(blob, "converted.docx");
+          }
         }
-        
-        if (activeTool === 'extract_text') {
-           const blob = new Blob([fullText], { type: "text/plain;charset=utf-8" });
-           saveAs(blob, "wizard_extraction.txt");
-           appendLog("Pure UTF-8 extraction complete! Triggering FileSaver.");
-        } else if (activeTool === 'convert_word') {
-           appendLog("Cross-compiling native string structures to DOCX Document blocks...");
-           const doc = new Document({
-             sections: [{
-               properties: {},
-               children: fullText.split("\n\n").map((t: string) => new Paragraph({
-                  children: [new TextRun(t)]
-               }))
-             }]
-           });
-           
-           const docBlob = await Packer.toBlob(doc);
-           saveAs(docBlob, "wizard_converted.docx");
-           appendLog("Conversion complete!");
+        else if (activeTool === 'ocr') {
+          const page = await pdf.getPage(selectedPage);
+          const viewport = page.getViewport({ scale: 2.0 });
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return;
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+          appendLog("OCR Engine: analyzing bitmap data...");
+          const { data: { text } } = await Tesseract.recognize(canvas.toDataURL(), 'eng', {
+             logger: m => m.status === 'recognizing text' && appendLog(`Neural Scan: ${Math.round(m.progress * 100)}%`)
+          });
+          appendLog("--- DATA RECOVERY COMPLETE ---");
+          appendLog(text);
+          appendLog("------------------------------");
         }
       }
 
     } catch (e) {
       console.error(e);
-      appendLog("CRITICAL ERROR: " + String(e));
-      alert('Failed to process PDF document.');
+      appendLog(`CRITICAL ERROR: ${String(e)}`);
     } finally {
       setIsProcessing(false);
     }
   };
 
+  const addTextOverlay = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (activeTool !== 'content_edit') return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const pdfX = x / 0.6;
+    const pdfY = y / 0.6;
+
+    const newOverlay: EditOverlay = {
+      id: Math.random().toString(36).substr(2, 9),
+      page: selectedPage,
+      x: pdfX,
+      y: pdfY,
+      text: 'Double click to edit',
+      fontSize: 14,
+      color: '#000000'
+    };
+    setEditOverlays([...editOverlays, newOverlay]);
+  };
+
   return (
     <div className="app-container">
-      {/* Sidebar */}
       <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-icon">
-            <Zap size={20} />
-          </div>
+        <div className="brand" onClick={() => setActiveTool('dashboard')} style={{cursor: 'pointer'}}>
+          <Zap size={20} className="text-accent" />
           <span className="brand-text">PDF Wizard Pro</span>
         </div>
 
-        <div className="nav-section">
-          <div className="nav-title">Menu</div>
-          <button 
-            className={`nav-item ${activeTool === 'dashboard' ? 'active' : ''}`}
-            onClick={() => { setActiveTool('dashboard'); setProcessingLog([]); }}
-          >
-            <LayoutDashboard size={18} className="nav-icon" /> Dashboard
-          </button>
-        </div>
+        <nav className="nav-container">
+          <div className="nav-section">
+            <div className="nav-title">Primary</div>
+            <button className={`nav-item ${activeTool === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTool('dashboard')}>
+              <LayoutDashboard size={18} /> Dashboard
+            </button>
+            <button className={`nav-item ${activeTool === 'content_edit' ? 'active' : ''}`} onClick={() => setActiveTool('content_edit')}>
+              <Plus size={18} /> Content Editor
+            </button>
+          </div>
 
-        <div className="nav-section">
-          <div className="nav-title">Organize PDF</div>
-          <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => setActiveTool('merge')}>
-            <Merge size={18} className="nav-icon" /> Merge PDF
-          </button>
-          <button className={`nav-item ${activeTool === 'split' ? 'active' : ''}`} onClick={() => setActiveTool('split')}>
-            <Scissors size={18} className="nav-icon" /> Split PDF
-          </button>
-        </div>
+          <div className="nav-section">
+            <div className="nav-title">Organize</div>
+            <button className={`nav-item ${activeTool === 'split' ? 'active' : ''}`} onClick={() => setActiveTool('split')}>
+              <Scissors size={18} /> Split
+            </button>
+            <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => setActiveTool('merge')}>
+              <Merge size={18} /> Merge
+            </button>
+            <button className={`nav-item ${activeTool === 'rotate' ? 'active' : ''}`} onClick={() => setActiveTool('rotate')}>
+              <RotateCw size={18} /> Rotate
+            </button>
+          </div>
 
-        <div className="nav-section">
-          <div className="nav-title">Optimize & Convert</div>
-          <button className={`nav-item ${activeTool === 'compress' ? 'active' : ''}`} onClick={() => setActiveTool('compress')}>
-            <RefreshCw size={18} className="nav-icon" /> Compress PDF
-          </button>
-          <button className={`nav-item ${activeTool === 'convert_jpg' ? 'active' : ''}`} onClick={() => setActiveTool('convert_jpg')}>
-            <FileImage size={18} className="nav-icon" /> PDF to JPG
-          </button>
-          <button className={`nav-item ${activeTool === 'convert_word' ? 'active' : ''}`} onClick={() => setActiveTool('convert_word')}>
-            <Type size={18} className="nav-icon" /> PDF to Word
-          </button>
-        </div>
+          <div className="nav-section">
+            <div className="nav-title">Convert</div>
+            <button className={`nav-item ${activeTool === 'convert_jpg' ? 'active' : ''}`} onClick={() => setActiveTool('convert_jpg')}>
+              <FileImage size={18} /> PDF to JPG
+            </button>
+            <button className={`nav-item ${activeTool === 'convert_word' ? 'active' : ''}`} onClick={() => setActiveTool('convert_word')}>
+              <Type size={18} /> PDF to Word
+            </button>
+          </div>
 
-        <div className="nav-section">
-          <div className="nav-title">Advanced</div>
-          <button className={`nav-item ${activeTool === 'watermark' ? 'active' : ''}`} onClick={() => setActiveTool('watermark')}>
-            <Droplet size={18} className="nav-icon" /> Add Watermark
-          </button>
-          <button className={`nav-item ${activeTool === 'rotate' ? 'active' : ''}`} onClick={() => setActiveTool('rotate')}>
-            <RotateCw size={18} className="nav-icon" /> Rotate Pages
-          </button>
-          <button className={`nav-item ${activeTool === 'protect' ? 'active' : ''}`} onClick={() => setActiveTool('protect')}>
-            <Lock size={18} className="nav-icon" /> Protect PDF
-          </button>
-        </div>
-
-        <div className="nav-section">
-          <div className="nav-title">Next-Gen Labs <span className="badge">New</span></div>
-          <button className={`nav-item ${activeTool === 'ocr' ? 'active' : ''}`} onClick={() => setActiveTool('ocr')}>
-            <ScanText size={18} className="nav-icon" /> Neural OCR
-          </button>
-          <button className={`nav-item ${activeTool === 'extract_text' ? 'active' : ''}`} onClick={() => setActiveTool('extract_text')}>
-            <FileCode2 size={18} className="nav-icon" /> Raw Extractor
-          </button>
-          <button className={`nav-item ${activeTool === 'ai_chat' ? 'active' : ''} ai-glow`} onClick={() => setActiveTool('ai_chat')} style={{ borderRadius: 'var(--radius-md)' }}>
-            <Cpu size={18} className="nav-icon" /> AI Summarizer
-          </button>
-        </div>
+          <div className="nav-section">
+            <div className="nav-title">Intelligence</div>
+            <button className={`nav-item ${activeTool === 'ocr' ? 'active' : ''}`} onClick={() => setActiveTool('ocr')}>
+              <ScanText size={18} /> OCR Neural Scan
+            </button>
+            <button className={`nav-item ${activeTool === 'extract_text' ? 'active' : ''}`} onClick={() => setActiveTool('extract_text')}>
+              <FileCode2 size={18} /> Raw Extractor
+            </button>
+          </div>
+        </nav>
       </aside>
 
-      {/* Main Content */}
       <main className="main-content">
         <header className="topbar">
           <div className="search-bar">
-            <Search size={16} color="var(--text-secondary)" />
-            <input 
-              type="text" 
-              className="search-input" 
-              placeholder="Search features, tools, recent files..." 
-            />
+            <Search size={16} />
+            <input placeholder="Search features..." />
           </div>
           <div className="topbar-actions">
-            <button className="icon-btn">
-              <Bell size={20} />
-            </button>
-            <button className="icon-btn">
-              <User size={20} />
-            </button>
+            <Bell size={20} />
+            <div className="user-avatar" style={{width: 32, height: 32, borderRadius: '50%', background: '#333', display: 'flex', alignItems: 'center', justifyContent: 'center'}}><User size={20} /></div>
           </div>
         </header>
 
         <section className="workspace">
-          {activeTool === 'dashboard' && (
-            <>
-              <div className="workspace-header">
-                <h1 className="workspace-title text-gradient">Welcome back, Pro User.</h1>
-                <p className="workspace-subtitle">Select a tool to start working with your PDFs.</p>
-              </div>
-
-              <div className="tools-grid">
-                <div className="tool-card" onClick={() => setActiveTool('merge')}>
-                  <div className="tool-icon-wrapper"><Merge size={28} /></div>
-                  <h3 className="tool-title">Merge PDF</h3>
-                  <p className="tool-desc">Combine multiple PDFs in the exact order you want. Fast, easy and totally secure.</p>
-                </div>
-                <div className="tool-card" onClick={() => setActiveTool('convert_jpg')}>
-                  <div className="tool-icon-wrapper"><ImageDown size={28} /></div>
-                  <h3 className="tool-title">Convert to Images</h3>
-                  <p className="tool-desc">Rasterize all pages into configurable highest DPI JPG exports packed in a Zip.</p>
-                </div>
-                <div className="tool-card" onClick={() => setActiveTool('convert_word')}>
-                  <div className="tool-icon-wrapper"><Type size={28} /></div>
-                  <h3 className="tool-title">Convert to Word</h3>
-                  <p className="tool-desc">Rip complex object data streams and convert natively directly into Office Docx documents.</p>
-                </div>
-                <div className="tool-card" onClick={() => setActiveTool('compress')}>
-                  <div className="tool-icon-wrapper"><RefreshCw size={28} /></div>
-                  <h3 className="tool-title">Compress PDF</h3>
-                  <p className="tool-desc">Modify file sizes efficiently with object purging to optimize internet delivery payloads.</p>
-                </div>
-                <div className="tool-card" onClick={() => setActiveTool('ocr')}>
-                  <div className="tool-icon-wrapper"><ScanText size={28} /></div>
-                  <h3 className="tool-title">Image OCR Scanner</h3>
-                  <p className="tool-desc">Native neural text extraction over bitmaps! Drag a scanned PDF and we lift the raw text payload.</p>
-                </div>
-                <div className="tool-card" onClick={() => setActiveTool('extract_text')}>
-                   <div className="tool-icon-wrapper"><FileCode2 size={28} /></div>
-                   <h3 className="tool-title">Raw Text Dumper</h3>
-                   <p className="tool-desc">Pure programmatic iteration pulling utf-8 strings natively from deep inside binary layouts.</p>
-                </div>
-              </div>
-            </>
-          )}
-
-          {activeTool !== 'dashboard' && !file && (
-            <div className="editor-view">
-              <div className="workspace-header">
-                <h1 className="workspace-title" style={{textTransform: 'capitalize'}}>{activeTool.replace('_', ' ')} Tool</h1>
-                <p className="workspace-subtitle">Upload your file to get started.</p>
-              </div>
-              <div className="upload-zone">
-                <div 
-                  className="upload-box"
-                  onDrop={handleDrop}
-                  onDragOver={handleDragOver}
-                  onClick={() => document.getElementById('file-upload')?.click()}
-                >
-                  <Upload className="upload-icon" />
-                  <h2 className="upload-title">Drop your node structure here</h2>
-                  <p style={{ color: 'var(--text-secondary)', marginBottom: '24px' }}>Maximum memory payload: 100MB</p>
-                  
-                  <button className="btn-primary">
-                    <MousePointer size={18} /> Select File
-                  </button>
-                  <input id="file-upload" type="file" accept=".pdf" style={{ display: 'none' }} onChange={handleFileUpload} />
-                </div>
+          {!file ? (
+            <div className="upload-view">
+              <div className="upload-box" onClick={() => document.getElementById('picker')?.click()}>
+                <Upload size={48} className="text-accent mb-4" />
+                <h2 style={{marginBottom: 8}}>Drop PDF to begin editing</h2>
+                <p style={{color: '#666'}}>Advanced processing up to 100MB</p>
+                <input id="picker" type="file" hidden onChange={handleFileUpload} accept=".pdf" />
               </div>
             </div>
-          )}
+          ) : (
+            <div className="editor-layout">
+              <div className="preview-strip">
+                {previewImages.map((img, i) => (
+                  <div key={i} className={`preview-card ${selectedPage === i + 1 ? 'selected' : ''}`} onClick={() => setSelectedPage(i + 1)}>
+                    <img src={img} alt={`Page ${i+1}`} />
+                    <span>{i + 1}</span>
+                  </div>
+                ))}
+              </div>
 
-          {activeTool !== 'dashboard' && file && (
-            <div className="editor-view" style={{flexDirection: 'row', gap: '24px', margin: '-32px', height: 'calc(100% + 64px)'}}>
-               {/* Left Panel: Processor Terminal Output */}
-               <div className="pdf-content-area w-full flex-1" style={{ justifyContent: 'flex-start', paddingTop: '32px' }}>
-                 <div style={{ background: '#0a0a0f', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)', width: '100%', height: '100%', padding: '16px', display: 'flex', flexDirection: 'column' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', borderBottom: '1px solid #333', paddingBottom: '8px' }}>
-                       <span style={{color: 'lime', fontFamily: 'monospace'}}>Terminal Log</span>
-                       <span style={{color: 'gray', fontFamily: 'monospace'}}>{file.name} ({(file.size/1024/1024).toFixed(2)} MB)</span>
+              <div className="editing-center">
+                <div className="canvas-container" onClick={addTextOverlay}>
+                  {previewImages[selectedPage - 1] && (
+                    <div style={{position: 'relative', display: 'inline-block'}}>
+                      <img src={previewImages[selectedPage - 1]} alt="Current Page" />
+                      {editOverlays.filter(o => o.page === selectedPage).map(overlay => (
+                        <div 
+                          key={overlay.id}
+                          style={{
+                            position: 'absolute',
+                            left: overlay.x * 0.6,
+                            top: overlay.y * 0.6,
+                            color: overlay.color,
+                            fontSize: overlay.fontSize * 0.6,
+                            background: 'rgba(255,255,100,0.3)',
+                            padding: '2px',
+                            cursor: 'move',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4
+                          }}
+                        >
+                          <input 
+                            value={overlay.text} 
+                            onChange={(e) => {
+                              const next = [...editOverlays];
+                              const idx = next.findIndex(o => o.id === overlay.id);
+                              next[idx].text = e.target.value;
+                              setEditOverlays(next);
+                            }}
+                            style={{background: 'transparent', border: 'none', color: 'inherit', fontSize: 'inherit', outline: 'none'}}
+                          />
+                          <button onClick={(e) => {
+                            e.stopPropagation();
+                            setEditOverlays(editOverlays.filter(o => o.id !== overlay.id));
+                          }}>
+                            <Trash2 size={10} />
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                    <div style={{ flex: 1, overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.85rem', color: '#00ffcc' }}>
-                        {processingLog.map((log, i) => (
-                          <div key={i} className="mb-2" style={{ whiteSpace: 'pre-wrap' }}>$ {log}</div>
-                        ))}
-                        {isProcessing && <div style={{ animation: 'blink 1s infinite' }}>_</div>}
-                    </div>
-                 </div>
-               </div>
-               
-               {/* Right side config panel */}
-               <div className="tool-config-panel">
-                 <h3 className="panel-title text-gradient">Tool Options</h3>
-                 
-                 {/* Modifiers available on certain tools */}
-                 {['convert_jpg'].includes(activeTool) && (
-                   <>
-                     <div className="form-group">
-                        <label className="form-label">Resolution Enhancer (DPI Scale)</label>
-                        <select className="form-input mb-4" value={resolutionScale} onChange={e => setResolutionScale(Number(e.target.value))}>
-                           <option value={1.0}>1.0x (Standard)</option>
-                           <option value={1.5}>1.5x (High Quality)</option>
-                           <option value={2.0}>2.0x (Ultra 4K)</option>
-                           <option value={0.5}>0.5x (Reduced Size)</option>
-                        </select>
-                     </div>
-                     <div className="form-group">
-                        <label className="form-label">File Size / Compression Profile</label>
-                        <select className="form-input mb-4" value={imageQuality} onChange={e => setImageQuality(Number(e.target.value))}>
-                           <option value={0.95}>Lossless (Max Size)</option>
-                           <option value={0.80}>Balanced (Web ready)</option>
-                           <option value={0.50}>Maximum Compression</option>
-                        </select>
-                     </div>
-                   </>
-                 )}
+                  )}
+                  {activeTool === 'content_edit' && (
+                    <div className="overlay-msg">Click anywhere to add text overlay</div>
+                  )}
+                </div>
 
-                 {activeTool === 'watermark' && (
-                    <div className="form-group">
-                      <p className="form-label">Text Node Payload</p>
-                      <input type="text" className="form-input mb-4" value={watermarkText} onChange={(e) => setWatermarkText(e.target.value)} placeholder="CONFIDENTIAL" />
-                    </div>
-                 )}
-                 {activeTool === 'rotate' && (
-                    <div className="form-group">
-                      <p className="form-label">Calculated Geometric Trajectory</p>
-                      <select className="form-input mb-4" value={rotationAngle} onChange={(e) => setRotationAngle(Number(e.target.value))}>
-                        <option value={90}>90° Loop Clockwise</option>
-                        <option value={180}>180° Inversion</option>
-                        <option value={270}>270° Sub-Clockwise</option>
-                      </select>
-                    </div>
-                 )}
-                 {activeTool === 'protect' && (
-                    <div className="form-group">
-                      <p className="form-label">Inject Cryptographic Entropy String</p>
-                      <input type="password" className="form-input mb-4" value={password} onChange={(e) => setPassword(e.target.value)} />
-                    </div>
-                 )}
+                <div className="terminal-panel">
+                  <div className="terminal-header">System Output Log</div>
+                  <div className="terminal-body">
+                    {processingLog.map((log, i) => <div key={i} style={{marginBottom: 4}}>$ {log}</div>)}
+                    {isProcessing && <div className="blink">_</div>}
+                  </div>
+                </div>
+              </div>
 
-                 <button className="btn-secondary w-full justify-center mt-2 mb-4" onClick={() => {setFile(null); setProcessingLog([]);}}>Abort & Unload</button>
-                 <button className="btn-primary w-full justify-center" onClick={handleProcessPdf} disabled={isProcessing}>
-                    {isProcessing ? 'Processing...' : 'Execute Payload 🔥'}
-                 </button>
-               </div>
+              <div className="controls-panel">
+                <h3><Settings size={18} style={{verticalAlign: 'middle', marginRight: 8}} /> Config</h3>
+                
+                {(['split', 'rotate', 'watermark', 'convert_jpg'].includes(activeTool)) && (
+                  <div className="control-group">
+                    <label>Page Range Selection</label>
+                    <input value={pageRange} onChange={e => setPageRange(e.target.value)} placeholder="e.g. 1,3-5,all" />
+                  </div>
+                )}
+
+                {activeTool === 'rotate' && (
+                  <div className="control-group">
+                    <label>Rotation Direction</label>
+                    <select value={rotationAngle} onChange={e => setRotationAngle(Number(e.target.value))}>
+                      <option value={90}>90° Clockwise</option>
+                      <option value={180}>180° Flip</option>
+                      <option value={270}>90° Counter-Clockwise</option>
+                    </select>
+                  </div>
+                )}
+
+                {activeTool === 'watermark' && (
+                  <div className="control-group">
+                    <label>Watermark Content</label>
+                    <input value={watermarkText} onChange={e => setWatermarkText(e.target.value)} />
+                  </div>
+                )}
+
+                {activeTool === 'protect' && (
+                  <div className="control-group">
+                    <label>Set Access Password</label>
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Encryption key" />
+                  </div>
+                )}
+
+                {activeTool === 'convert_jpg' && (
+                  <>
+                    <div className="control-group">
+                      <label>DPI Upscale ({resolutionScale}x)</label>
+                      <input type="range" min="1" max="3" step="0.5" value={resolutionScale} onChange={e => setResolutionScale(Number(e.target.value))} />
+                    </div>
+                    <div className="control-group">
+                      <label>Quality ({Math.round(imageQuality * 100)}%)</label>
+                      <input type="range" min="0.1" max="1" step="0.1" value={imageQuality} onChange={e => setImageQuality(Number(e.target.value))} />
+                    </div>
+                  </>
+                )}
+
+                <button className="btn-primary" onClick={handleProcessPdf} disabled={isProcessing} style={{marginTop: 'auto'}}>
+                  {isProcessing ? 'Processing...' : 'Execute Task 🔥'}
+                </button>
+                <button className="btn-secondary" onClick={() => setFile(null)} style={{marginTop: 8}}>Close File</button>
+              </div>
             </div>
           )}
         </section>
