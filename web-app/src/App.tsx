@@ -4,7 +4,7 @@ import {
   Type, Zap,
   Search, Bell, User, Upload,
   FileImage, RotateCw, ScanText, FileCode2,
-  Plus, Trash2, Settings
+  Plus, Trash2, Settings, Menu, X
 } from 'lucide-react';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -44,6 +44,7 @@ function App() {
   const [previewImages, setPreviewImages] = useState<string[]>([]);
   const [selectedPage, setSelectedPage] = useState(1);
   const [editOverlays, setEditOverlays] = useState<EditOverlay[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const appendLog = (msg: string) => {
     setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`]);
@@ -292,53 +293,58 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <aside className="sidebar">
-        <div className="brand" onClick={() => setActiveTool('dashboard')} style={{cursor: 'pointer'}}>
-          <Zap size={20} className="text-accent" />
-          <span className="brand-text">PDF Wizard Pro</span>
+    <div className={`app-container ${sidebarOpen ? 'sidebar-open' : ''}`}>
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+        <div className="sidebar-header">
+          <div className="brand" onClick={() => { setActiveTool('dashboard'); setSidebarOpen(false); }} style={{cursor: 'pointer'}}>
+            <Zap size={20} className="text-accent" />
+            <span className="brand-text">PDF Wizard Pro</span>
+          </div>
+          <button className="mobile-close" onClick={() => setSidebarOpen(false)}>
+            <X size={24} />
+          </button>
         </div>
 
         <nav className="nav-container">
           <div className="nav-section">
             <div className="nav-title">Primary</div>
-            <button className={`nav-item ${activeTool === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTool('dashboard')}>
+            <button className={`nav-item ${activeTool === 'dashboard' ? 'active' : ''}`} onClick={() => { setActiveTool('dashboard'); setSidebarOpen(false); }}>
               <LayoutDashboard size={18} /> Dashboard
             </button>
-            <button className={`nav-item ${activeTool === 'content_edit' ? 'active' : ''}`} onClick={() => setActiveTool('content_edit')}>
+            <button className={`nav-item ${activeTool === 'content_edit' ? 'active' : ''}`} onClick={() => { setActiveTool('content_edit'); setSidebarOpen(false); }}>
               <Plus size={18} /> Content Editor
             </button>
           </div>
 
           <div className="nav-section">
             <div className="nav-title">Organize</div>
-            <button className={`nav-item ${activeTool === 'split' ? 'active' : ''}`} onClick={() => setActiveTool('split')}>
+            <button className={`nav-item ${activeTool === 'split' ? 'active' : ''}`} onClick={() => { setActiveTool('split'); setSidebarOpen(false); }}>
               <Scissors size={18} /> Split
             </button>
-            <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => setActiveTool('merge')}>
+            <button className={`nav-item ${activeTool === 'merge' ? 'active' : ''}`} onClick={() => { setActiveTool('merge'); setSidebarOpen(false); }}>
               <Merge size={18} /> Merge
             </button>
-            <button className={`nav-item ${activeTool === 'rotate' ? 'active' : ''}`} onClick={() => setActiveTool('rotate')}>
+            <button className={`nav-item ${activeTool === 'rotate' ? 'active' : ''}`} onClick={() => { setActiveTool('rotate'); setSidebarOpen(false); }}>
               <RotateCw size={18} /> Rotate
             </button>
           </div>
 
           <div className="nav-section">
             <div className="nav-title">Convert</div>
-            <button className={`nav-item ${activeTool === 'convert_jpg' ? 'active' : ''}`} onClick={() => setActiveTool('convert_jpg')}>
+            <button className={`nav-item ${activeTool === 'convert_jpg' ? 'active' : ''}`} onClick={() => { setActiveTool('convert_jpg'); setSidebarOpen(false); }}>
               <FileImage size={18} /> PDF to JPG
             </button>
-            <button className={`nav-item ${activeTool === 'convert_word' ? 'active' : ''}`} onClick={() => setActiveTool('convert_word')}>
+            <button className={`nav-item ${activeTool === 'convert_word' ? 'active' : ''}`} onClick={() => { setActiveTool('convert_word'); setSidebarOpen(false); }}>
               <Type size={18} /> PDF to Word
             </button>
           </div>
 
           <div className="nav-section">
             <div className="nav-title">Intelligence</div>
-            <button className={`nav-item ${activeTool === 'ocr' ? 'active' : ''}`} onClick={() => setActiveTool('ocr')}>
+            <button className={`nav-item ${activeTool === 'ocr' ? 'active' : ''}`} onClick={() => { setActiveTool('ocr'); setSidebarOpen(false); }}>
               <ScanText size={18} /> OCR Neural Scan
             </button>
-            <button className={`nav-item ${activeTool === 'extract_text' ? 'active' : ''}`} onClick={() => setActiveTool('extract_text')}>
+            <button className={`nav-item ${activeTool === 'extract_text' ? 'active' : ''}`} onClick={() => { setActiveTool('extract_text'); setSidebarOpen(false); }}>
               <FileCode2 size={18} /> Raw Extractor
             </button>
           </div>
@@ -347,6 +353,9 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
+          <button className="mobile-menu-toggle" onClick={() => setSidebarOpen(true)}>
+            <Menu size={24} />
+          </button>
           <div className="search-bar">
             <Search size={16} />
             <input placeholder="Search features..." />
