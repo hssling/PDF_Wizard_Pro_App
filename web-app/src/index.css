@@ -330,18 +330,37 @@ button {
   background: #f1f5f9;
   position: relative;
   overflow: hidden;
+  height: 100%;
+}
+
+.editor-toolbar {
+  height: 48px;
+  background: white;
+  border-bottom: 1px solid rgba(0,0,0,0.05);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  z-index: 100;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.02);
 }
 
 .canvas-container {
   flex: 1;
+  overflow: auto; /* Full scrolling allowed */
+  padding: 60px;
+  background: #cbd5e1; /* Professional drafting-table background */
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  overflow: auto;
-  padding: 60px;
-  position: relative;
-  background: #f1f5f9;
-  scroll-behavior: smooth;
+}
+
+.canvas-container img {
+  box-shadow: 0 20px 50px rgba(0,0,0,0.15);
+  border-radius: 2px;
+  background: white;
+  image-rendering: high-quality;
+  /* Removed constraints to allow 100% physical zoom */
 }
 
 .preview-card {
@@ -473,9 +492,9 @@ button {
   -webkit-text-fill-color: transparent;
 }
 
-.overlay-msg {
-  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
-  background: var(--accent-color); padding: 4px 12px; border-radius: 20px; font-size: 11px;
+/* Dark Mode Override */
+.dark-canvas {
+  filter: invert(0.9) hue-rotate(180deg) contrast(1.1) !important;
 }
 
 .blink { animation: blink 1s infinite; }

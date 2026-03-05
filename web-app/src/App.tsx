@@ -1010,15 +1010,13 @@ function App() {
                     )}
 
                     <div className="canvas-container" onClick={addOverlay}>
-                      {previewImages[selectedPage - 1] && (
-                        <div style={{
-                          position: 'relative', 
-                          display: 'inline-block',
-                          filter: documentDarkMode ? 'invert(0.9) hue-rotate(180deg)' : 'none',
-                          transition: 'filter 0.3s ease'
-                        }}>
-                          <img src={previewImages[selectedPage - 1]} alt="Current Page" draggable={false} />
-                          {editOverlays.filter(o => o.page === selectedPage).map(overlay => (
+                      <div className={documentDarkMode ? 'dark-canvas' : ''} style={{
+                        position: 'relative', 
+                        display: 'inline-block',
+                        transition: 'filter 0.3s ease',
+                      }}>
+                        <img src={previewImages[selectedPage - 1]} alt="Current Page" draggable={false} />
+                        {editOverlays.filter(o => o.page === selectedPage).map(overlay => (
                             <div 
                               key={overlay.id}
                               className={`overlay-item ${selectedOverlayId === overlay.id ? 'selected' : ''}`}
@@ -1063,9 +1061,8 @@ function App() {
                                 </div>
                               )}
                             </div>
-                          ))}
+                        ))}
                         </div>
-                      )}
                       <div className="overlay-msg">
                         {activeEditorTool === 'cursor' ? 'Select an object to edit' : `Click to place ${activeEditorTool}`}
                       </div>
