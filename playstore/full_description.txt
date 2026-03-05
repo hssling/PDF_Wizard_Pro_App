@@ -1,0 +1,32 @@
+﻿Meet PDF Wizard Pro, the lightweight daily PDF studio crafted by Dr Siddalingaiah H S for medical, academic, and business teams that need reliable tools without the clutter. Open PDFs from any app, tidy up pages in seconds, run on-device OCR, edit the recognized text, and share polished documents or zipped image bundles straight from your phone.
+
+Core toolkit
+- Precision page studio: reorder, rotate, duplicate, delete, or insert blank pages with live previews.
+- Modern markup: drop text annotations or image stamps anywhere on the canvas and fine tune placement later.
+- Conversion lab: merge PDFs, convert photo sets into a PDF, export every page as PNGs, or shrink files with intelligent compression.
+- Metadata control: update title, author, subject, keywords, and automatically stamp creator "Dr Siddalingaiah H S".
+- Secure sharing: exports land in a private workspace and can be shared via FileProvider links, email, chat, or cloud drives.
+
+Content intelligence
+- Full-page OCR powered by Google ML Kit works offline and respects your privacy.
+- Recognized text previews update per page so you always know what can be searched or exported.
+- Edit, copy, or share OCR output directly, then bundle every page's text into a ready-to-share TXT export.
+- Detailed snackbars keep you informed whenever OCR finishes, exports complete, or an action needs attention.
+
+Daily workflows
+- Clean up lecture handouts, prescriptions, protocols, or signed forms before archiving.
+- Collate ward photos into a PDF case sheet or convert reports into high-quality images for presentations.
+- Trim and compress heavy PDFs before sending them to regulatory portals or patient portals.
+- Annotate research drafts with sticky notes during peer review, then export comments as images or text.
+
+What's new in this release
+- Offline OCR, text recognition cache, and a dedicated content editor dialog.
+- One-tap text export to TXT plus clipboard-friendly previews.
+- Refined Compose UI with Material 3 cards, progress indicators, and content-to-action shortcuts.
+
+Privacy & trust
+- Everything runs on-device using PdfRenderer, PdfBox, and ML Kit, so sensitive files never leave your phone.
+- No ads, trackers, or inflated libraries - just a dependable Compose app optimized for storage and battery.
+- Signed Play Store-ready builds (AAB + APK) are produced with a dedicated keystore and CI-friendly Gradle tasks.
+
+Download PDF Wizard Pro today and keep your document toolbox simple, elegant, and production-ready.
