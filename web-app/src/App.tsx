@@ -146,6 +146,53 @@ function App() {
   const [zoomLevel, setZoomLevel] = useState(100);
   const pageWrapperRef = useRef<HTMLDivElement>(null);
 
+  // === VISUAL EDITOR CANVAS PERSISTENCE ===
+  useEffect(() => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    const rect = canvas.parentElement?.getBoundingClientRect();
+    if (rect && (canvas.width !== rect.width || canvas.height !== rect.height)) {
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Render all saved stroke paths onto the view
+    const pathsOnPage = drawPaths.filter(p => p.page === selectedPage);
+    pathsOnPage.forEach(path => {
+      ctx.beginPath();
+      ctx.moveTo(path.points[0]?.x, path.points[0]?.y);
+      ctx.strokeStyle = path.tool === 'eraser' ? '#FFFFFF' : 
+                        path.tool === 'highlighter' ? 'rgba(255,255,0,0.4)' : path.color;
+      ctx.lineWidth = path.tool === 'pencil' ? 1 : path.tool === 'highlighter' ? 16 : 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let i = 1; i < path.points.length; i++) {
+        ctx.lineTo(path.points[i].x, path.points[i].y);
+      }
+      ctx.stroke();
+    });
+
+    // Render active drawing stroke
+    if (currentDrawPath.length > 0) {
+      ctx.beginPath();
+      ctx.moveTo(currentDrawPath[0].x, currentDrawPath[0].y);
+      ctx.strokeStyle = activeEditorTool === 'eraser' ? '#FFFFFF' : 
+                        activeEditorTool === 'highlighter' ? 'rgba(255,255,0,0.4)' : currentColor;
+      ctx.lineWidth = activeEditorTool === 'pencil' ? 1 : activeEditorTool === 'highlighter' ? 16 : 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let i = 1; i < currentDrawPath.length; i++) {
+        ctx.lineTo(currentDrawPath[i].x, currentDrawPath[i].y);
+      }
+      ctx.stroke();
+    }
+  }, [drawPaths, currentDrawPath, selectedPage, activeEditorTool, currentColor, zoomLevel]);
+
   // Undo/Redo
   const [undoStack, setUndoStack] = useState<EditOverlay[][]>([]);
   const [redoStack, setRedoStack] = useState<EditOverlay[][]>([]);
@@ -1378,7 +1425,7 @@ function App() {
                 </div>
               </div>
 
-              <div style={{display: 'flex', gap: 24, marginBottom: 32, background: 'var(--bg-surface)', padding: 24, borderRadius: 20, border: '1px solid var(--border-color)', backdropFilter: 'blur(20px)'}}>
+              <div style={{display: 'flex', flexWrap: 'wrap', gap: 24, marginBottom: 32, background: 'var(--bg-surface)', padding: 24, borderRadius: 20, border: '1px solid var(--border-color)', backdropFilter: 'blur(20px)'}}>
                 <div style={{flex: 1, display: 'flex', flexDirection: 'column', gap: 16}}>
                   <div style={{display: 'flex', gap: 16, flexWrap: 'wrap'}}>
                     <div className="control-group" style={{flex: 1, minWidth: 200}}>
@@ -1408,7 +1455,7 @@ function App() {
                     </div>
                   </div>
 
-                  <div style={{display: 'flex', gap: 24, alignItems: 'center', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', borderRadius: 12}}>
+                  <div style={{display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', borderRadius: 12}}>
                     <label style={{display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)'}}>
                       <input type="checkbox" checked={autoPageNumbers} onChange={e => setAutoPageNumbers(e.target.checked)} /> 
                       Inject Footer Page Numbers
@@ -1418,7 +1465,7 @@ function App() {
                   </div>
                 </div>
 
-                <div style={{width: 300, display: 'flex', flexDirection: 'column', gap: 12, borderLeft: '1px solid var(--border-color)', paddingLeft: 24}}>
+                <div style={{flex: '1 1 200px', display: 'flex', flexDirection: 'column', gap: 12, borderLeft: '1px solid var(--border-color)', paddingLeft: 24}}>
                   <button className="btn-primary" style={{height: '100%'}} onClick={() => document.getElementById('creator-picker')?.click()}>
                     <Plus size={32} style={{marginBottom: 8}} />
                     <span style={{fontSize: 14}}>Append Visual Assets</span>
@@ -1444,7 +1491,15 @@ function App() {
                   {pdfCreatorImages.map((img, idx) => (
                     <div key={idx} className="animate-in" style={{background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: 16, overflow: 'hidden', position: 'relative', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', transition: 'var(--transition)'}}>
                       <div style={{aspectRatio: '1/1', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000', position: 'relative'}}>
-                        <img src={img.src} alt={img.name} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: `rotate(${img.rotation}deg)`, transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)'}} />
+                        <img src={img.src} alt={img.name} style={{
+                           maxWidth: '100%', 
+                           maxHeight: '100%', 
+                           objectFit: 'contain', 
+                           transform: `rotate(${img.rotation}deg) scale(${img.crop && (img.crop.w < 100 || img.crop.h < 100) ? 1.05 : 1})`, 
+                           filter: img.filter === 'grayscale' ? 'grayscale(1)' : img.filter === 'bw' ? 'grayscale(1) contrast(2) brightness(1.1)' : img.filter === 'contrast' ? 'contrast(1.5)' : img.filter === 'sepia' ? 'sepia(0.8)' : 'none',
+                           clipPath: img.crop ? `inset(${img.crop.y}% ${100 - (img.crop.x + img.crop.w)}% ${100 - (img.crop.y + img.crop.h)}% ${img.crop.x}%)` : 'none',
+                           transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                        }} />
                         <div style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.4) 0%, transparent 40%, transparent 60%, rgba(0,0,0,0.4) 100%)', opacity: 0, transition: '0.2s'}} className="img-hover-overlay" />
                         <div style={{position: 'absolute', top: 12, left: 12, background: 'var(--accent-gradient)', color: 'white', fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 20, boxShadow: '0 4px 10px rgba(0,0,0,0.3)'}}>PAGE {idx + 1}</div>
                       </div>
@@ -1898,7 +1953,7 @@ function App() {
                               {pageTextItems[selectedPage].map((item, idx) => (
                                 <span
                                   key={idx}
-                                  className={editingTextId === `${selectedPage}-${idx}` ? 'editing' : ''}
+                                  className={`${editingTextId === `${selectedPage}-${idx}` ? 'editing' : ''} ${item.str !== item.originalStr ? 'edited' : ''}`}
                                   style={{
                                     left: item.x,
                                     top: item.y,

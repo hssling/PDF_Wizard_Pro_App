@@ -480,6 +480,12 @@ button {
   color: #0f172a;
 }
 
+.text-layer span.edited {
+  color: #000;
+  background: white;
+  z-index: 25;
+}
+
 /* === DRAWING CANVAS === */
 .draw-canvas {
   position: absolute;
