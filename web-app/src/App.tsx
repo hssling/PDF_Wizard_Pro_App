@@ -113,7 +113,7 @@ function App() {
       
       for (let i = 1; i <= numToShow; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 0.6 });
+        const viewport = page.getViewport({ scale: 2.5 });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         
@@ -297,7 +297,7 @@ function App() {
       const newPreviews: string[] = [];
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 0.6 });
+        const viewport = page.getViewport({ scale: 2.5 });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         if (!context) continue;
@@ -1369,6 +1369,7 @@ function App() {
         draw={draw}
         stopDrawing={stopDrawing}
         clear={clearSignature}
+        handleImageUpload={handleImageUpload}
       />
 
       <SecurityVaultModal 
@@ -1393,6 +1394,7 @@ interface SignaturePadModalProps {
   draw: (e: React.MouseEvent | React.TouchEvent) => void;
   stopDrawing: () => void;
   clear: () => void;
+  handleImageUpload: (e: React.ChangeEvent<HTMLInputElement>, overlayId?: string) => void;
 }
 
 const SignaturePadModal = ({ 
@@ -1403,7 +1405,8 @@ const SignaturePadModal = ({
   startDrawing, 
   draw, 
   stopDrawing, 
-  clear 
+  clear,
+  handleImageUpload
 }: SignaturePadModalProps) => {
   if (!show) return null;
   return (
@@ -1426,8 +1429,15 @@ const SignaturePadModal = ({
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
         />
-        <div style={{display: 'flex', gap: 12, justifyContent: 'flex-end'}}>
-          <button className="btn-secondary" onClick={clear}>Clear Canvas</button>
+        <div style={{display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center'}}>
+          <div style={{display: 'flex', gap: 8}}>
+             <button className="btn-secondary" onClick={clear}>Clear Drawing</button>
+             <label className="btn-secondary" style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', margin: 0}}>
+               <FileImage size={16} /> 
+               Upload Signature
+               <input type="file" style={{display: 'none'}} onChange={(e) => handleImageUpload(e, undefined)} accept="image/*" />
+             </label>
+          </div>
           <button className="btn-primary" onClick={onSave}>Commit to Document</button>
         </div>
       </div>
