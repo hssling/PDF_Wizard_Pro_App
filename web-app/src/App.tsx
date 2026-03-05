@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
-  LayoutDashboard, Merge, Type, Zap,
+  Merge, Type, Zap,
   Search, Bell, User, Upload,
   FileImage, RotateCw, ScanText,
   Plus, Trash2, Settings, Menu, X, Lock, PenTool, Sparkles, ShieldAlert, Moon, Sun, ShieldCheck,
-  Edit3, Layers, PlusCircle, Stamp, EyeOff, Brain, Home
+  Edit3, Layers, PlusCircle, Stamp, EyeOff, Brain, Home,
+  MousePointer2, Hand, Pen, Pencil, Eraser, Highlighter, Square, Circle, Minus, ArrowRight,
+  MessageSquare, ZoomIn, ZoomOut, Undo2, Redo2
 } from 'lucide-react';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
@@ -21,7 +23,7 @@ type ToolType = 'dashboard' | 'merge' | 'split' | 'compress' | 'convert_jpg' | '
 
 interface EditOverlay {
   id: string;
-  type: 'text' | 'rect' | 'image' | 'signature';
+  type: 'text' | 'rect' | 'circle' | 'line' | 'arrow' | 'image' | 'signature' | 'highlight' | 'comment' | 'stamp';
   page: number;
   x: number;
   y: number;
@@ -30,11 +32,26 @@ interface EditOverlay {
   color?: string;
   width?: number;
   height?: number;
-  imageContent?: string; // base64
+  imageContent?: string;
   fontFamily?: string;
+  opacity?: number;
+  strokeWidth?: number;
 }
 
-type EditorTool = 'cursor' | 'text' | 'rect' | 'image' | 'signature' | 'whiteout';
+interface TextItem {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fontName: string;
+  fontSize: number;
+}
+
+type EditorTool = 
+  | 'cursor' | 'hand' | 'text' | 'pen' | 'pencil' | 'eraser'
+  | 'highlighter' | 'rect' | 'circle' | 'line' | 'arrow'
+  | 'image' | 'signature' | 'whiteout' | 'stamp' | 'comment';
 
 function App() {
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
@@ -91,8 +108,47 @@ function App() {
   const [resizeStartSize, setResizeStartSize] = useState({ width: 0, height: 0 });
   const [resizeStartPos, setResizeStartPos] = useState({ x: 0, y: 0 });
 
+  // OCR Text Layer
+  const [pageTextItems, setPageTextItems] = useState<Record<number, TextItem[]>>({});
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+
+  // Drawing Layer
+  const drawCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [drawPaths, setDrawPaths] = useState<{page: number; points: {x:number;y:number}[]; color: string; width: number; tool: string}[]>([]);
+  void drawPaths; // Used in drawing canvas onMouseUp handler
+  const [currentDrawPath, setCurrentDrawPath] = useState<{x:number;y:number}[]>([]);
+
+  // Zoom
+  const [zoomLevel, setZoomLevel] = useState(100);
+  const pageWrapperRef = useRef<HTMLDivElement>(null);
+
+  // Undo/Redo
+  const [undoStack, setUndoStack] = useState<EditOverlay[][]>([]);
+  const [redoStack, setRedoStack] = useState<EditOverlay[][]>([]);
+
   const appendLog = (msg: string) => {
-    setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`].slice(-8)); // Limit log history for performance
+    setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`].slice(-12));
+  };
+
+  const pushUndo = () => {
+    setUndoStack(prev => [...prev, [...editOverlays]]);
+    setRedoStack([]);
+  };
+
+  const undo = () => {
+    if (undoStack.length === 0) return;
+    const previous = undoStack[undoStack.length - 1];
+    setRedoStack(prev => [...prev, [...editOverlays]]);
+    setEditOverlays(previous);
+    setUndoStack(prev => prev.slice(0, -1));
+  };
+
+  const redo = () => {
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    setUndoStack(prev => [...prev, [...editOverlays]]);
+    setEditOverlays(next);
+    setRedoStack(prev => prev.slice(0, -1));
   };
 
   // Move / Drag Logic
@@ -151,18 +207,21 @@ function App() {
       
       const loadingTask = pdfjsLib.getDocument({ 
         data: arrayBuffer,
-        useWorkerFetch: false, // sometimes helps stability on mobile
+        useWorkerFetch: false,
         isEvalSupported: false 
       });
       
       const pdf = await loadingTask.promise;
       const previews: string[] = [];
-      const numToShow = Math.min(pdf.numPages, 12);
+      const allTextItems: Record<number, TextItem[]> = {};
+      const numToShow = Math.min(pdf.numPages, 20);
       
       for (let i = 1; i <= numToShow; i++) {
         const page = await pdf.getPage(i);
+        const scale = 1.5; // Optimal scale for readability without over-zoom
+        const cssViewport = page.getViewport({ scale });
         const ratio = window.devicePixelRatio || 1;
-        const viewport = page.getViewport({ scale: 2.0 * ratio });
+        const renderViewport = page.getViewport({ scale: scale * ratio });
         const canvas = document.createElement("canvas");
         const context = canvas.getContext("2d");
         
@@ -171,23 +230,45 @@ function App() {
           continue;
         }
 
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-        // High-DPI physical-to-CSS mapping
-        canvas.style.width = `${viewport.width / ratio}px`;
-        canvas.style.height = `${viewport.height / ratio}px`;
+        canvas.height = renderViewport.height;
+        canvas.width = renderViewport.width;
+        canvas.style.width = `${cssViewport.width}px`;
+        canvas.style.height = `${cssViewport.height}px`;
         
         await page.render({ 
           canvasContext: context, 
-          viewport: viewport,
+          viewport: renderViewport,
           canvas: canvas
         }).promise;
         
-        previews.push(canvas.toDataURL('image/jpeg', 0.9));
+        previews.push(canvas.toDataURL('image/jpeg', 0.92));
+
+        // === OCR TEXT EXTRACTION ===
+        try {
+          const textContent = await page.getTextContent();
+          const items: TextItem[] = [];
+          for (const item of textContent.items) {
+            if ('str' in item && item.str.trim()) {
+              const tx = item.transform;
+              const fontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+              items.push({
+                str: item.str,
+                x: tx[4] * scale,
+                y: cssViewport.height - (tx[5] * scale) - (fontSize * scale),
+                width: (item.width || 0) * scale,
+                height: fontSize * scale * 1.2,
+                fontName: item.fontName || 'sans-serif',
+                fontSize: fontSize * scale,
+              });
+            }
+          }
+          allTextItems[i] = items;
+        } catch { /* text extraction optional */ }
       }
       
       setPreviewImages(previews);
-      appendLog(`Successfully generated ${previews.length} page previews.`);
+      setPageTextItems(allTextItems);
+      appendLog(`Generated ${previews.length} pages with OCR text layer.`);
     } catch (err: unknown) {
       console.error(err);
       const message = err instanceof Error ? err.message : 'Frame buffer failure';
@@ -196,24 +277,40 @@ function App() {
   };
 
   const addOverlay = (e: React.MouseEvent) => {
-    if (activeEditorTool === 'cursor') return;
+    if (activeEditorTool === 'cursor' || activeEditorTool === 'hand') return;
     
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
+    const overlayType = (() => {
+      switch (activeEditorTool) {
+        case 'whiteout': case 'rect': return 'rect' as const;
+        case 'circle': return 'circle' as const;
+        case 'line': return 'line' as const;
+        case 'arrow': return 'arrow' as const;
+        case 'highlighter': return 'highlight' as const;
+        case 'comment': return 'comment' as const;
+        case 'stamp': return 'stamp' as const;
+        case 'image': return 'image' as const;
+        case 'signature': return 'signature' as const;
+        default: return 'text' as const;
+      }
+    })();
+
     const newOverlay: EditOverlay = {
       id: Math.random().toString(36).substr(2, 9),
-      type: activeEditorTool === 'whiteout' ? 'rect' : activeEditorTool as any,
+      type: overlayType,
       page: selectedPage,
       x: x - (activeEditorTool === 'text' ? 0 : 50),
       y: y - (activeEditorTool === 'text' ? 10 : 25),
-      text: activeEditorTool === 'text' ? 'Double-click to type...' : '',
+      text: activeEditorTool === 'text' ? 'Double-click to type...' : activeEditorTool === 'comment' ? 'Add note...' : activeEditorTool === 'stamp' ? 'APPROVED' : '',
       fontSize: currentFontSize,
-      color: activeEditorTool === 'whiteout' ? '#FFFFFF' : currentColor,
+      color: activeEditorTool === 'whiteout' ? '#FFFFFF' : activeEditorTool === 'highlighter' ? 'rgba(255,255,0,0.4)' : currentColor,
       fontFamily: currentFontFamily,
-      width: activeEditorTool === 'text' ? undefined : 150,
-      height: activeEditorTool === 'text' ? undefined : 80
+      width: activeEditorTool === 'text' ? undefined : activeEditorTool === 'line' || activeEditorTool === 'arrow' ? 200 : 150,
+      height: activeEditorTool === 'text' ? undefined : activeEditorTool === 'line' || activeEditorTool === 'arrow' ? 4 : 80,
+      opacity: activeEditorTool === 'highlighter' ? 0.4 : 1,
     };
 
     setEditOverlays(prev => [...prev, newOverlay]);
@@ -1048,25 +1145,164 @@ function App() {
                   <div className="editing-center">
                     {activeTool === 'content_edit' && (
                       <div className="editor-toolbar">
-                        <button className={`toolbar-btn ${activeEditorTool === 'cursor' ? 'active' : ''}`} onClick={() => setActiveEditorTool('cursor')} title="Select Component"><LayoutDashboard size={18} /></button>
-                        <button className={`toolbar-btn ${activeEditorTool === 'text' ? 'active' : ''}`} onClick={() => setActiveEditorTool('text')} title="Add Text Injection"><Type size={18} /></button>
-                        <button className={`toolbar-btn ${activeEditorTool === 'whiteout' ? 'active' : ''}`} onClick={() => setActiveEditorTool('whiteout')} title="Whiteout / Redaction"><Trash2 size={18} /></button>
-                        <button className={`toolbar-btn ${activeEditorTool === 'image' ? 'active' : ''}`} onClick={() => setActiveEditorTool('image')} title="Insert Image Asset"><FileImage size={18} /></button>
-                        <button className={`toolbar-btn ${activeEditorTool === 'signature' ? 'active' : ''}`} onClick={() => setShowSignaturePad(true)} title="Draw New Signature"><PenTool size={18} /></button>
+                        {/* Selection & Navigation */}
+                        <button className={`toolbar-btn ${activeEditorTool === 'cursor' ? 'active' : ''}`} onClick={() => setActiveEditorTool('cursor')} title="Select / Cursor"><MousePointer2 size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'hand' ? 'active' : ''}`} onClick={() => setActiveEditorTool('hand')} title="Pan / Hand Tool"><Hand size={16} /></button>
+                        <div className="tool-sep" />
+                        
+                        {/* Text & Annotation */}
+                        <button className={`toolbar-btn ${activeEditorTool === 'text' ? 'active' : ''}`} onClick={() => setActiveEditorTool('text')} title="Add Text"><Type size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'comment' ? 'active' : ''}`} onClick={() => setActiveEditorTool('comment')} title="Add Comment / Note"><MessageSquare size={16} /></button>
+                        <div className="tool-sep" />
+                        
+                        {/* Freehand Drawing */}
+                        <button className={`toolbar-btn ${activeEditorTool === 'pen' ? 'active' : ''}`} onClick={() => setActiveEditorTool('pen')} title="Pen (Ink)"><Pen size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'pencil' ? 'active' : ''}`} onClick={() => setActiveEditorTool('pencil')} title="Pencil (Sketch)"><Pencil size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'highlighter' ? 'active' : ''}`} onClick={() => setActiveEditorTool('highlighter')} title="Highlighter"><Highlighter size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'eraser' ? 'active' : ''}`} onClick={() => setActiveEditorTool('eraser')} title="Eraser"><Eraser size={16} /></button>
+                        <div className="tool-sep" />
+                        
+                        {/* Shapes & Lines */}
+                        <button className={`toolbar-btn ${activeEditorTool === 'rect' ? 'active' : ''}`} onClick={() => setActiveEditorTool('rect')} title="Rectangle"><Square size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'circle' ? 'active' : ''}`} onClick={() => setActiveEditorTool('circle')} title="Ellipse / Circle"><Circle size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'line' ? 'active' : ''}`} onClick={() => setActiveEditorTool('line')} title="Line"><Minus size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'arrow' ? 'active' : ''}`} onClick={() => setActiveEditorTool('arrow')} title="Arrow"><ArrowRight size={16} /></button>
+                        <div className="tool-sep" />
+
+                        {/* Media & Stamps */}
+                        <button className={`toolbar-btn ${activeEditorTool === 'image' ? 'active' : ''}`} onClick={() => setActiveEditorTool('image')} title="Insert Image"><FileImage size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'signature' ? 'active' : ''}`} onClick={() => setShowSignaturePad(true)} title="Signature"><PenTool size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'stamp' ? 'active' : ''}`} onClick={() => setActiveEditorTool('stamp')} title="Stamp"><Stamp size={16} /></button>
+                        <button className={`toolbar-btn ${activeEditorTool === 'whiteout' ? 'active' : ''}`} onClick={() => setActiveEditorTool('whiteout')} title="Whiteout / Redact"><EyeOff size={16} /></button>
+                        <div className="tool-sep" />
+
+                        {/* Undo / Redo */}
+                        <button className="toolbar-btn" onClick={undo} title="Undo"><Undo2 size={16} /></button>
+                        <button className="toolbar-btn" onClick={redo} title="Redo"><Redo2 size={16} /></button>
+                        <div className="tool-sep" />
+
+                        {/* Zoom Controls */}
+                        <button className="toolbar-btn" onClick={() => setZoomLevel(z => Math.max(25, z - 25))} title="Zoom Out"><ZoomOut size={16} /></button>
+                        <span className="zoom-display">{zoomLevel}%</span>
+                        <button className="toolbar-btn" onClick={() => setZoomLevel(z => Math.min(400, z + 25))} title="Zoom In"><ZoomIn size={16} /></button>
                       </div>
                     )}
 
-                    <div className="canvas-container" onMouseMove={handlePointerMove} onMouseUp={handlePointerUp}>
-                      <div className={documentDarkMode ? 'dark-canvas' : ''} style={{
-                        position: 'relative', 
-                        display: 'inline-block',
-                        transition: 'filter 0.3s ease',
-                      }}>
-                        <img src={previewImages[selectedPage - 1]} alt="Current Page" draggable={false} onMouseDown={(e) => {
-                          if (activeEditorTool === 'cursor') return;
-                          addOverlay(e as any);
-                        }} />
-                        {editOverlays.filter(o => o.page === selectedPage).map(overlay => (
+                    <div 
+                      className="canvas-container" 
+                      onMouseMove={handlePointerMove} 
+                      onMouseUp={handlePointerUp}
+                      style={{ cursor: activeEditorTool === 'hand' ? 'grab' : activeEditorTool === 'cursor' ? 'default' : 'crosshair' }}
+                    >
+                      {previewImages[selectedPage - 1] && (
+                        <div 
+                          ref={pageWrapperRef}
+                          className={`page-wrapper ${documentDarkMode ? 'dark-canvas' : ''}`}
+                          style={{ transform: `scale(${zoomLevel / 100})`, transformOrigin: 'top left' }}
+                        >
+                          <img 
+                            src={previewImages[selectedPage - 1]} 
+                            alt={`Page ${selectedPage}`} 
+                            draggable={false} 
+                            onMouseDown={(e) => {
+                              if (activeEditorTool !== 'cursor' && activeEditorTool !== 'hand') {
+                                pushUndo();
+                                addOverlay(e);
+                              }
+                            }}
+                          />
+
+                          {/* === OCR TEXT LAYER — Click any word to edit in-place === */}
+                          {activeEditorTool === 'cursor' && pageTextItems[selectedPage] && (
+                            <div className="text-layer">
+                              {pageTextItems[selectedPage].map((item, idx) => (
+                                <span
+                                  key={idx}
+                                  className={editingTextId === `${selectedPage}-${idx}` ? 'editing' : ''}
+                                  style={{
+                                    left: item.x,
+                                    top: item.y,
+                                    fontSize: item.fontSize,
+                                    width: item.width || 'auto',
+                                    height: item.height,
+                                  }}
+                                  contentEditable={editingTextId === `${selectedPage}-${idx}`}
+                                  suppressContentEditableWarning
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingTextId(`${selectedPage}-${idx}`);
+                                  }}
+                                  onBlur={() => setEditingTextId(null)}
+                                  onInput={(e) => {
+                                    const newText = (e.target as HTMLElement).textContent || '';
+                                    setPageTextItems(prev => {
+                                      const updated = { ...prev };
+                                      if (updated[selectedPage]) {
+                                        updated[selectedPage] = [...updated[selectedPage]];
+                                        updated[selectedPage][idx] = { ...updated[selectedPage][idx], str: newText };
+                                      }
+                                      return updated;
+                                    });
+                                  }}
+                                >
+                                  {item.str}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* === FREEHAND DRAWING CANVAS === */}
+                          {(['pen', 'pencil', 'eraser', 'highlighter'] as EditorTool[]).includes(activeEditorTool) && (
+                            <canvas 
+                              ref={drawCanvasRef}
+                              className="draw-canvas"
+                              onMouseDown={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const x = e.clientX - rect.left;
+                                const y = e.clientY - rect.top;
+                                setCurrentDrawPath([{ x, y }]);
+                                setIsDrawing(true);
+                                const ctx = e.currentTarget.getContext('2d');
+                                if (ctx) {
+                                  ctx.beginPath();
+                                  ctx.moveTo(x, y);
+                                  ctx.strokeStyle = activeEditorTool === 'eraser' ? '#FFFFFF' : 
+                                                    activeEditorTool === 'highlighter' ? 'rgba(255,255,0,0.4)' : currentColor;
+                                  ctx.lineWidth = activeEditorTool === 'pencil' ? 1 : activeEditorTool === 'highlighter' ? 16 : 2;
+                                  ctx.lineCap = 'round';
+                                  ctx.lineJoin = 'round';
+                                }
+                              }}
+                              onMouseMove={(e) => {
+                                if (!isDrawing) return;
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const x = e.clientX - rect.left;
+                                const y = e.clientY - rect.top;
+                                setCurrentDrawPath(prev => [...prev, { x, y }]);
+                                const ctx = e.currentTarget.getContext('2d');
+                                if (ctx) {
+                                  ctx.lineTo(x, y);
+                                  ctx.stroke();
+                                }
+                              }}
+                              onMouseUp={() => {
+                                setIsDrawing(false);
+                                if (currentDrawPath.length > 0) {
+                                  setDrawPaths(prev => [...prev, { 
+                                    page: selectedPage, 
+                                    points: currentDrawPath, 
+                                    color: currentColor, 
+                                    width: 2, 
+                                    tool: activeEditorTool 
+                                  }]);
+                                }
+                                setCurrentDrawPath([]);
+                              }}
+                            />
+                          )}
+
+                          {/* === OVERLAY LAYERS (text boxes, shapes, images) === */}
+                          {editOverlays.filter(o => o.page === selectedPage).map(overlay => (
                             <div 
                               key={overlay.id}
                               className={`overlay-item ${selectedOverlayId === overlay.id ? 'selected' : ''}`}
@@ -1076,49 +1312,68 @@ function App() {
                                 top: overlay.y,
                                 width: overlay.width || 'auto',
                                 height: overlay.height || 'auto',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center'
                               }}
                             >
-                              <div className="resize-handle"></div>
+                              <div className="resize-handle" />
                               {overlay.type === 'text' && (
+                                <input 
+                                  value={overlay.text} 
+                                  onMouseDown={e => e.stopPropagation()}
+                                  onChange={(e) => {
+                                    setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: e.target.value } : o));
+                                  }}
+                                  style={{
+                                    background: 'transparent', border: 'none', 
+                                    color: overlay.color, fontSize: overlay.fontSize || 14, 
+                                    fontFamily: overlay.fontFamily, outline: 'none', width: '100%',
+                                  }}
+                                />
+                              )}
+                              {overlay.type === 'comment' && (
+                                <div style={{background: '#fef3c7', padding: 8, borderRadius: 4, fontSize: 12, color: '#92400e', boxShadow: '0 2px 6px rgba(0,0,0,0.1)', minWidth: 120}}>
+                                  <div style={{fontWeight: 700, marginBottom: 4, fontSize: 10, color: '#b45309'}}>💬 NOTE</div>
                                   <input 
-                                    value={overlay.text} 
-                                    onMouseDown={e => e.stopPropagation()} /* Allow clicking into input */
-                                    onChange={(e) => {
-                                      setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: e.target.value } : o));
-                                    }}
-                                    style={{
-                                      background: 'transparent', 
-                                      border: 'none', 
-                                      color: overlay.color, 
-                                      fontSize: overlay.fontSize || 14, 
-                                      fontFamily: overlay.fontFamily,
-                                      outline: 'none',
-                                      width: '100%',
-                                      textAlign: 'center'
-                                    }}
+                                    value={overlay.text} onMouseDown={e => e.stopPropagation()}
+                                    onChange={(e) => setEditOverlays(prev => prev.map(o => o.id === overlay.id ? { ...o, text: e.target.value } : o))}
+                                    style={{background: 'transparent', border: 'none', outline: 'none', width: '100%', color: '#92400e', fontSize: 12}}
                                   />
+                                </div>
                               )}
                               {overlay.type === 'rect' && (
-                                <div className="overlay-rect" style={{ width: '100%', height: '100%', background: overlay.color }}></div>
+                                <div style={{ width: '100%', height: '100%', background: overlay.color, opacity: overlay.opacity || 1 }} />
+                              )}
+                              {overlay.type === 'circle' && (
+                                <div style={{ width: '100%', height: '100%', borderRadius: '50%', border: `2px solid ${overlay.color}`, background: 'transparent' }} />
+                              )}
+                              {overlay.type === 'line' && (
+                                <div style={{ width: '100%', height: 2, background: overlay.color, position: 'absolute', top: '50%' }} />
+                              )}
+                              {overlay.type === 'arrow' && (
+                                <div style={{ width: '100%', height: 2, background: overlay.color, position: 'absolute', top: '50%' }}>
+                                  <div style={{position: 'absolute', right: -6, top: -5, width: 0, height: 0, borderTop: '6px solid transparent', borderBottom: '6px solid transparent', borderLeft: `10px solid ${overlay.color}`}} />
+                                </div>
+                              )}
+                              {overlay.type === 'highlight' && (
+                                <div style={{ width: '100%', height: '100%', background: 'rgba(255,255,0,0.35)' }} />
+                              )}
+                              {overlay.type === 'stamp' && (
+                                <div style={{border: '3px solid #ef4444', borderRadius: 8, padding: '4px 12px', color: '#ef4444', fontWeight: 800, fontSize: 14, textTransform: 'uppercase', transform: 'rotate(-15deg)', background: 'rgba(255,255,255,0.9)'}}>
+                                  {overlay.text || 'APPROVED'}
+                                </div>
                               )}
                               {(overlay.type === 'image' || overlay.type === 'signature') && (
                                 <div style={{width: '100%', height: '100%', position: 'relative'}}>
                                   {overlay.imageContent ? (
-                                    <img src={overlay.imageContent} className="overlay-image" style={{width: '100%', height: '100%'}} alt="Overlay" />
+                                    <img src={overlay.imageContent} style={{width: '100%', height: '100%', objectFit: 'contain'}} alt="Asset" />
                                   ) : (
-                                    <div style={{fontSize: 10, textAlign: 'center', padding: 10, background: '#eee'}}>Click 'Edit Properties' to upload</div>
+                                    <div style={{fontSize: 10, textAlign: 'center', padding: 8, background: '#f1f5f9', color: '#64748b', borderRadius: 4}}>Upload via Config →</div>
                                   )}
                                 </div>
                               )}
                             </div>
-                        ))}
+                          ))}
                         </div>
-                      <div className="overlay-msg">
-                        {activeEditorTool === 'cursor' ? 'Select an object to edit' : `Click to place ${activeEditorTool}`}
-                      </div>
+                      )}
                     </div>
 
                     <div className="terminal-panel">
