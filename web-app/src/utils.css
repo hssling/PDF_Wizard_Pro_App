@@ -1,0 +1,8 @@
+
+.w-full { width: 100%; }
+.flex-1 { flex: 1; }
+.flex { display: flex; }
+.justify-center { justify-content: center; }
+.mt-2 { margin-top: 8px; }
+.mt-4 { margin-top: 16px; }
+.mb-4 { margin-bottom: 16px; }
