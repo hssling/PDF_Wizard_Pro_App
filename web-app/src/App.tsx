@@ -8,7 +8,7 @@ import {
   MousePointer2, Hand, Pen, Pencil, Eraser, Highlighter, Square, Circle, Minus, ArrowRight,
   MessageSquare, ZoomIn, ZoomOut, Undo2, Redo2
 } from 'lucide-react';
-import { PDFDocument, rgb, degrees } from 'pdf-lib';
+import { PDFDocument, rgb, degrees, PDFImage } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 import JSZip from 'jszip';
@@ -106,6 +106,9 @@ function App() {
   const [pdfPageSize, setPdfPageSize] = useState<'auto' | 'a4' | 'letter' | 'legal'>('auto');
   const [pdfOrientation, setPdfOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [pdfMargin, setPdfMargin] = useState(20);
+
+  // Mobile State
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
 
   // Interaction Layer Control
   const [isDragging, setIsDragging] = useState(false);
@@ -274,6 +277,7 @@ function App() {
       
       setPreviewImages(previews);
       setPageTextItems(allTextItems);
+      setPageOrder(Array.from({ length: pdf.numPages }, (_, i) => i)); // INITIALIZE ORDER
       appendLog(`Generated ${previews.length} pages with OCR text layer.`);
     } catch (err: unknown) {
       console.error(err);
@@ -406,7 +410,9 @@ function App() {
     reader.readAsDataURL(file);
   };
 
-  const handlePageAction = (action: 'delete' | 'duplicate' | 'moveUp' | 'moveDown', index: number) => {
+  const [pageRotations, setPageRotations] = useState<Record<number, number>>({});
+
+  const handlePageAction = (action: 'delete' | 'duplicate' | 'moveUp' | 'moveDown' | 'rotate', index: number) => {
     const newOrder = [...pageOrder];
     if (action === 'delete') {
       newOrder.splice(index, 1);
@@ -416,8 +422,13 @@ function App() {
       [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1], newOrder[index]];
     } else if (action === 'moveDown' && index < newOrder.length - 1) {
       [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
+    } else if (action === 'rotate') {
+       setPageRotations(prev => ({
+         ...prev,
+         [index]: ((prev[index] || 0) + 90) % 360
+       }));
     }
-    setPageOrder(newOrder);
+    if (action !== 'rotate') setPageOrder(newOrder);
     appendLog(`Organizer: Page ${action} operation committed.`);
   };
 
@@ -680,7 +691,12 @@ function App() {
           appendLog(`Reconstructing document from custom sequence (${pageOrder.length} pages)...`);
           const newDoc = await PDFDocument.create();
           const copiedPages = await newDoc.copyPages(srcDoc, pageOrder);
-          copiedPages.forEach(p => newDoc.addPage(p));
+          copiedPages.forEach((p, i) => {
+            if (pageRotations[i]) {
+               p.setRotation(degrees(pageRotations[i]));
+            }
+            newDoc.addPage(p);
+          });
           
           const pdfBytes = await newDoc.save();
           saveAs(new Blob([pdfBytes as BlobPart]), `organized_${file.name}`);
@@ -917,8 +933,14 @@ function App() {
     if (pdfCreatorImages.length === 0) return;
     try {
       setIsProcessing(true);
-      appendLog('Creating PDF from images...');
+      appendLog('Creating high-fidelity PDF buffer...');
       const pdfDoc = await PDFDocument.create();
+      
+      // Set Metadata
+      pdfDoc.setTitle('WizardPro Created Document');
+      pdfDoc.setAuthor('WizardPro SOTA App');
+      pdfDoc.setProducer('PDF Wizard Pro Premium');
+
       const pageSizes: Record<string, [number, number]> = {
         a4: [595.28, 841.89],
         letter: [612, 792],
@@ -928,17 +950,31 @@ function App() {
       for (let i = 0; i < pdfCreatorImages.length; i++) {
         const item = pdfCreatorImages[i];
         const imgBytes = await item.file.arrayBuffer();
-        let img;
-        if (item.file.type === 'image/png') {
-          img = await pdfDoc.embedPng(imgBytes);
-        } else {
-          img = await pdfDoc.embedJpg(imgBytes);
+        let img: PDFImage | null = null;
+        try {
+          if (item.file.type === 'image/png') {
+            img = await pdfDoc.embedPng(imgBytes);
+          } else {
+            img = await pdfDoc.embedJpg(imgBytes);
+          }
+        } catch {
+          appendLog(`Warning: Compression issue with ${item.name}. Attempting fallback...`);
+          try {
+            img = await pdfDoc.embedJpg(imgBytes);
+          } catch {
+            appendLog(`Error: Could not embed ${item.name}. Skipping.`);
+            continue;
+          }
         }
+
+        if (!img) continue;
 
         let pageW: number, pageH: number;
         if (pdfPageSize === 'auto') {
-          pageW = img.width + pdfMargin * 2;
-          pageH = img.height + pdfMargin * 2;
+          // In auto mode, if image is rotated 90/270, we swap dimensions
+          const isRotated = (item.rotation / 90) % 2 !== 0;
+          pageW = (isRotated ? img.height : img.width) + pdfMargin * 2;
+          pageH = (isRotated ? img.width : img.height) + pdfMargin * 2;
         } else {
           const [w, h] = pageSizes[pdfPageSize];
           pageW = pdfOrientation === 'landscape' ? h : w;
@@ -948,26 +984,49 @@ function App() {
         const page = pdfDoc.addPage([pageW, pageH]);
         const drawW = pageW - pdfMargin * 2;
         const drawH = pageH - pdfMargin * 2;
-        const scale = Math.min(drawW / img.width, drawH / img.height);
+
+        // Calculate scale and position with rotation
+        const isRotated = (item.rotation / 90) % 2 !== 0;
+        const currentW = isRotated ? img.height : img.width;
+        const currentH = isRotated ? img.width : img.height;
+        
+        const scale = Math.min(drawW / currentW, drawH / currentH);
         const finalW = img.width * scale;
         const finalH = img.height * scale;
-        const xOff = pdfMargin + (drawW - finalW) / 2;
-        const yOff = pdfMargin + (drawH - finalH) / 2;
+        
+        // Manual coordinate calculation for rotation around center
+        // pdf-lib drawImage rotate is CCW around (x, y) origin.
+        const R = (item.rotation * Math.PI) / 180;
+        const x = (pageW - Math.cos(R) * finalW + Math.sin(R) * finalH) / 2;
+        const y = (pageH - Math.sin(R) * finalW - Math.cos(R) * finalH) / 2;
 
-        if (item.rotation !== 0) {
-          page.pushOperators();
+        page.drawImage(img, {
+          x,
+          y,
+          width: finalW,
+          height: finalH,
+          rotate: degrees(item.rotation)
+        });
+
+        // Optional Page Numbering
+        if (autoPageNumbers) {
+          page.drawText(`${i + 1}`, {
+            x: pageW / 2 - 5,
+            y: 20,
+            size: 10,
+            color: rgb(0.5, 0.5, 0.5)
+          });
         }
-        page.drawImage(img, { x: xOff, y: yOff, width: finalW, height: finalH });
 
-        appendLog(`Page ${i + 1}: ${item.name} (${item.rotation}°)`);
+        appendLog(`Encoded Page ${i + 1}: ${item.name} (${item.rotation}°)`);
       }
 
       const pdfBytes = await pdfDoc.save();
       const blob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' });
-      saveAs(blob, 'created_document.pdf');
-      appendLog(`PDF created with ${pdfCreatorImages.length} pages. Download started.`);
+      saveAs(blob, `WizardPro_Created_${Date.now()}.pdf`);
+      appendLog(`SUCCESS: PDF generated and dispatched for download.`);
     } catch (err) {
-      appendLog(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+      appendLog(`ENGINE ERROR: ${err instanceof Error ? err.message : 'Unknown generation failure'}`);
     } finally {
       setIsProcessing(false);
     }
@@ -976,9 +1035,14 @@ function App() {
   return (
     <div className={`app-container ${sidebarOpen ? 'sidebar-open' : ''}`}>
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <div className="brand" onClick={() => { setActiveTool(null); setActiveMode('design'); setSidebarOpen(false); }} style={{cursor: 'pointer'}}>
-          <Zap size={24} className="text-accent" />
-          <span className="brand-text">WIZARDPRO</span>
+        <div className="brand" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', cursor: 'pointer'}}>
+          <div style={{display: 'flex', alignItems: 'center', gap: 12}} onClick={() => { setActiveTool(null); setActiveMode('design'); setSidebarOpen(false); }}>
+            <Zap size={24} className="text-accent" />
+            <span className="brand-text">WIZARDPRO</span>
+          </div>
+          <button className="mobile-close" onClick={() => setSidebarOpen(false)} style={{padding: 4}}>
+            <X size={20} />
+          </button>
         </div>
 
         <div className="nav-section">
@@ -1057,6 +1121,7 @@ function App() {
       </aside>
 
       <main className="main-content">
+        {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000}} />}
         <header className="topbar">
           <button className="mobile-menu-toggle" onClick={() => setSidebarOpen(true)}>
             <Menu size={24} />
@@ -1082,74 +1147,122 @@ function App() {
         <section className="workspace">
           {/* Create PDF works without a file loaded */}
           {activeTool === 'create_pdf' ? (
-            <div style={{padding: 24, overflow: 'auto', height: '100%'}}>
-              <div className="workspace-header">
-                <h1 className="workspace-title">Create PDF from Images</h1>
-                <p className="workspace-subtitle">Upload images, arrange pages, set orientation & page size, then export.</p>
+            <div style={{padding: '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
+              <div className="workspace-header" style={{margin: '0 0 32px 0', border: 'none'}}>
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start'}}>
+                  <div>
+                    <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Premium PDF Creator</h1>
+                    <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>High-fidelity image-to-PDF engine with per-page logic.</p>
+                  </div>
+                  <div style={{display: 'flex', gap: 12}}>
+                    <button className="btn-secondary" style={{width: 'auto', padding: '10px 20px'}} onClick={() => setPdfCreatorImages([])}>
+                      Clear All
+                    </button>
+                    {pdfCreatorImages.length > 0 && (
+                      <button className="btn-primary" style={{width: 'auto', padding: '10px 28px', background: 'var(--accent-gradient)', boxShadow: '0 8px 20px rgba(99, 102, 241, 0.4)'}} onClick={createPdfFromImages} disabled={isProcessing}>
+                        <Download size={18} style={{marginRight: 8}} /> {isProcessing ? 'Processing...' : `Generate PDF Documentation`}
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              <div style={{display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center'}}>
-                <button className="btn-primary" style={{width: 'auto', padding: '10px 20px'}} onClick={() => document.getElementById('creator-picker')?.click()}>
-                  <Upload size={16} style={{marginRight: 6}} /> Add Images
-                </button>
-                <input id="creator-picker" type="file" multiple accept="image/jpeg,image/png,image/jpg" hidden onChange={(e) => e.target.files && handleCreatorImageUpload(e.target.files)} />
+              <div style={{display: 'flex', gap: 24, marginBottom: 32, background: 'var(--bg-surface)', padding: 24, borderRadius: 20, border: '1px solid var(--border-color)', backdropFilter: 'blur(20px)'}}>
+                <div style={{flex: 1, display: 'flex', flexDirection: 'column', gap: 16}}>
+                  <div style={{display: 'flex', gap: 16, flexWrap: 'wrap'}}>
+                    <div className="control-group" style={{flex: 1, minWidth: 200}}>
+                      <label>Blueprint Page Size</label>
+                      <select value={pdfPageSize} onChange={e => setPdfPageSize(e.target.value as 'auto'|'a4'|'letter'|'legal')} style={{padding: '10px'}}>
+                        <option value="auto">Adaptive (Match Source Dimensions)</option>
+                        <option value="a4">Standard A4 (Enterprise)</option>
+                        <option value="letter">US Letter (North America)</option>
+                        <option value="legal">US Legal (Extended)</option>
+                      </select>
+                    </div>
+                    {pdfPageSize !== 'auto' && (
+                      <div className="control-group" style={{width: 160}}>
+                        <label>Orientation</label>
+                        <select value={pdfOrientation} onChange={e => setPdfOrientation(e.target.value as 'portrait'|'landscape')} style={{padding: '10px'}}>
+                          <option value="portrait">Vertical (Portrait)</option>
+                          <option value="landscape">Horizontal (Landscape)</option>
+                        </select>
+                      </div>
+                    )}
+                    <div className="control-group" style={{width: 120}}>
+                      <label>Gutter Margin</label>
+                      <div style={{display: 'flex', alignItems: 'center', gap: 8}}>
+                        <input type="number" value={pdfMargin} onChange={e => setPdfMargin(Number(e.target.value))} min={0} max={144} style={{padding: '10px'}} />
+                        <span style={{fontSize: 11, color: '#64748b'}}>PT</span>
+                      </div>
+                    </div>
+                  </div>
 
-                <select value={pdfPageSize} onChange={e => setPdfPageSize(e.target.value as 'auto'|'a4'|'letter'|'legal')} style={{background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', padding: '8px 12px', borderRadius: 6}}>
-                  <option value="auto">Auto Size (fit to image)</option>
-                  <option value="a4">A4 (210×297mm)</option>
-                  <option value="letter">US Letter (8.5×11")</option>
-                  <option value="legal">US Legal (8.5×14")</option>
-                </select>
-
-                {pdfPageSize !== 'auto' && (
-                  <select value={pdfOrientation} onChange={e => setPdfOrientation(e.target.value as 'portrait'|'landscape')} style={{background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', padding: '8px 12px', borderRadius: 6}}>
-                    <option value="portrait">Portrait</option>
-                    <option value="landscape">Landscape</option>
-                  </select>
-                )}
-
-                <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
-                  <label style={{fontSize: 12, color: '#94a3b8'}}>Margin:</label>
-                  <input type="number" value={pdfMargin} onChange={e => setPdfMargin(Number(e.target.value))} min={0} max={100} style={{width: 60, background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', padding: '6px 8px', borderRadius: 4}} />
-                  <span style={{fontSize: 11, color: '#64748b'}}>pt</span>
+                  <div style={{display: 'flex', gap: 24, alignItems: 'center', padding: '12px 16px', background: 'rgba(0,0,0,0.2)', borderRadius: 12}}>
+                    <label style={{display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)'}}>
+                      <input type="checkbox" checked={autoPageNumbers} onChange={e => setAutoPageNumbers(e.target.checked)} /> 
+                      Inject Footer Page Numbers
+                    </label>
+                    <div style={{width: 1, height: 20, background: 'var(--border-color)'}} />
+                    <span style={{fontSize: 13, color: 'var(--text-secondary)'}}>Project Scope: <strong>{pdfCreatorImages.length} Payload Items</strong></span>
+                  </div>
                 </div>
 
-                {pdfCreatorImages.length > 0 && (
-                  <button className="btn-primary" style={{width: 'auto', padding: '10px 24px', marginLeft: 'auto', background: '#10b981'}} onClick={createPdfFromImages} disabled={isProcessing}>
-                    <Download size={16} style={{marginRight: 6}} /> {isProcessing ? 'Creating...' : `Create PDF (${pdfCreatorImages.length} pages)`}
+                <div style={{width: 300, display: 'flex', flexDirection: 'column', gap: 12, borderLeft: '1px solid var(--border-color)', paddingLeft: 24}}>
+                  <button className="btn-primary" style={{height: '100%'}} onClick={() => document.getElementById('creator-picker')?.click()}>
+                    <Plus size={32} style={{marginBottom: 8}} />
+                    <span style={{fontSize: 14}}>Append Visual Assets</span>
                   </button>
-                )}
+                  <input id="creator-picker" type="file" multiple accept="image/*" hidden onChange={(e) => e.target.files && handleCreatorImageUpload(e.target.files)} />
+                </div>
               </div>
 
               {pdfCreatorImages.length === 0 ? (
-                <div style={{border: '2px dashed var(--border-color)', borderRadius: 12, padding: 60, textAlign: 'center', cursor: 'pointer'}} onClick={() => document.getElementById('creator-picker')?.click()}>
-                  <Upload size={48} style={{opacity: 0.3, marginBottom: 16}} />
-                  <p style={{color: '#64748b', fontSize: 16}}>Click or drag images here</p>
-                  <p style={{color: '#475569', fontSize: 12}}>Supports JPG, PNG. You can reorder and rotate after upload.</p>
+                <div style={{border: '3px dashed var(--border-color)', borderRadius: 24, padding: '80px 40px', textAlign: 'center', cursor: 'pointer', background: 'rgba(255,255,255,0.02)', transition: 'var(--transition)'}} 
+                     className="upload-box-large"
+                     onDragOver={e => e.preventDefault()}
+                     onDrop={e => { e.preventDefault(); if (e.dataTransfer.files) handleCreatorImageUpload(e.dataTransfer.files); }}
+                     onClick={() => document.getElementById('creator-picker')?.click()}>
+                  <div style={{width: 80, height: 80, borderRadius: '50%', background: 'rgba(99, 102, 241, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px'}}>
+                    <FileImage size={40} className="text-accent" />
+                  </div>
+                  <h2 style={{fontSize: '1.5rem', marginBottom: 12}}>Forge New Document</h2>
+                  <p style={{color: '#64748b', maxWidth: 400, margin: '0 auto'}}>Drag and drop ultra-high resolution images. We'll handle the architectural mapping and PDF encapsulation.</p>
                 </div>
               ) : (
-                <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16}}>
+                <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 24}}>
                   {pdfCreatorImages.map((img, idx) => (
-                    <div key={idx} style={{background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: 8, overflow: 'hidden', position: 'relative'}}>
-                      <div style={{aspectRatio: '3/4', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#1e293b'}}>
-                        <img src={img.src} alt={img.name} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: `rotate(${img.rotation}deg)`}} />
+                    <div key={idx} className="animate-in" style={{background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: 16, overflow: 'hidden', position: 'relative', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', transition: 'var(--transition)'}}>
+                      <div style={{aspectRatio: '1/1', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000', position: 'relative'}}>
+                        <img src={img.src} alt={img.name} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: `rotate(${img.rotation}deg)`, transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)'}} />
+                        <div style={{position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.4) 0%, transparent 40%, transparent 60%, rgba(0,0,0,0.4) 100%)', opacity: 0, transition: '0.2s'}} className="img-hover-overlay" />
+                        <div style={{position: 'absolute', top: 12, left: 12, background: 'var(--accent-gradient)', color: 'white', fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 20, boxShadow: '0 4px 10px rgba(0,0,0,0.3)'}}>PAGE {idx + 1}</div>
                       </div>
-                      <div style={{padding: 8, display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center'}}>
-                        <button onClick={() => moveCreatorImage(idx, -1)} title="Move Left" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#94a3b8', border: '1px solid var(--border-color)', borderRadius: 4, cursor: 'pointer'}}>◀</button>
-                        <button onClick={() => rotateCreatorImage(idx)} title="Rotate 90°" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#94a3b8', border: '1px solid var(--border-color)', borderRadius: 4, cursor: 'pointer'}}>↻</button>
-                        <button onClick={() => removeCreatorImage(idx)} title="Remove" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#ef4444', border: '1px solid #ef4444', borderRadius: 4, cursor: 'pointer'}}>✕</button>
-                        <button onClick={() => moveCreatorImage(idx, 1)} title="Move Right" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#94a3b8', border: '1px solid var(--border-color)', borderRadius: 4, cursor: 'pointer'}}>▶</button>
+                      
+                      <div style={{padding: '16px', display: 'flex', flexDirection: 'column', gap: 12}}>
+                        <div style={{fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}} title={img.name}>{img.name}</div>
+                        <div style={{display: 'flex', justifyContent: 'space-between', gap: 8}}>
+                          <div style={{display: 'flex', gap: 4}}>
+                            <button onClick={() => moveCreatorImage(idx, -1)} className="action-dot" title="Previous Position"><RotateCw size={14} style={{transform: 'scaleX(-1)'}} /></button>
+                            <button onClick={() => moveCreatorImage(idx, 1)} className="action-dot" title="Next Position"><RotateCw size={14} /></button>
+                          </div>
+                          <div style={{display: 'flex', gap: 4}}>
+                             <button onClick={() => rotateCreatorImage(idx)} className="action-dot" title="Clockwise 90°" style={{color: 'var(--accent-color)'}}><RotateCw size={14} /></button>
+                             <button onClick={() => removeCreatorImage(idx)} className="action-dot delete" title="Discard Asset"><Trash2 size={14} /></button>
+                          </div>
+                        </div>
                       </div>
-                      <div style={{position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,0.7)', color: 'white', fontSize: 10, padding: '2px 6px', borderRadius: 4}}>#{idx + 1}</div>
-                      <div style={{fontSize: 10, color: '#64748b', padding: '0 8px 6px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{img.name}</div>
                     </div>
                   ))}
                 </div>
               )}
 
               {processingLog.length > 0 && (
-                <div style={{marginTop: 16, background: '#0f172a', borderRadius: 8, padding: 12, fontFamily: 'monospace', fontSize: 11, color: '#22c55e', maxHeight: 120, overflow: 'auto'}}>
-                  {processingLog.map((log, i) => <div key={i}>$ {log}</div>)}
+                <div className="terminal-panel" style={{marginTop: 40, height: 'auto', maxHeight: 200, borderRadius: 16}}>
+                  <div className="terminal-header" style={{borderRadius: '16px 16px 0 0'}}>Neural Generation Logs</div>
+                  <div className="terminal-body">
+                    {processingLog.map((log, i) => <div key={i} style={{marginBottom: 4}}>$ {log}</div>)}
+                    {isProcessing && <div className="blink">_</div>}
+                  </div>
                 </div>
               )}
             </div>
@@ -1157,7 +1270,7 @@ function App() {
             <div className="upload-view">
               <div className="upload-box" onClick={() => document.getElementById('picker')?.click()}>
                 <Upload size={56} className="text-accent mb-4" />
-                <h2 style={{fontSize: '1.8rem', color: '#0f172a', fontWeight: 800, marginBottom: 12}}>Drop PDF to begin editing</h2>
+                <h2 style={{fontSize: '1.8rem', color: 'var(--text-primary)', fontWeight: 800, marginBottom: 12}}>Drop PDF to begin editing</h2>
                 <p style={{color: '#64748b', fontSize: '1.1rem', marginBottom: 32}}>Advanced AI-Ready processing up to 100MB</p>
                 <button className="btn-primary" style={{width: 'auto', padding: '14px 40px', fontSize: '1rem'}} onClick={(e) => { e.stopPropagation(); document.getElementById('picker')?.click(); }}>
                   Browse Local Files
@@ -1212,25 +1325,94 @@ function App() {
                 </div>
               )}
 
-              {activeTool === 'organize' && (
-                <div className="page-grid">
-                  {pageOrder.map((pageIdx, i) => (
-                    <div key={`${pageIdx}-${i}`} className="page-cell">
-                      <div className="page-badge">{i + 1}</div>
-                      {previewImages[pageIdx] && <img src={previewImages[pageIdx]} alt={`Page ${pageIdx + 1}`} />}
-                      <div className="page-actions">
-                        <div className="action-dot" title="Move Up" onClick={(e) => { e.stopPropagation(); handlePageAction('moveUp', i); }}><RotateCw size={14} style={{transform: 'rotate(-90deg)'}} /></div>
-                        <div className="action-dot" title="Move Down" onClick={(e) => { e.stopPropagation(); handlePageAction('moveDown', i); }}><RotateCw size={14} style={{transform: 'rotate(90deg)'}} /></div>
-                        <div className="action-dot" title="Duplicate" onClick={(e) => { e.stopPropagation(); handlePageAction('duplicate', i); }}><Plus size={14} /></div>
-                        <div className="action-dot delete" title="Remove" onClick={(e) => { e.stopPropagation(); handlePageAction('delete', i); }}><Trash2 size={14} /></div>
+              {activeTool === 'merge' && (
+                <div style={{padding: '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
+                  <div className="workspace-header" style={{margin: '0 0 40px 0', border: 'none'}}>
+                    <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Smart Multi-PDF Fusion</h1>
+                    <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>Advanced buffer concatenation with binary integrity verification.</p>
+                  </div>
+
+                  <div style={{maxWidth: 1000, margin: '0 auto'}}>
+                    <div style={{border: '3px dashed var(--border-color)', borderRadius: 24, padding: '80px 40px', textAlign: 'center', cursor: 'pointer', background: 'rgba(255,255,255,0.02)', transition: 'var(--transition)'}} 
+                         onClick={() => document.getElementById('merge-picker')?.click()}>
+                      <div style={{width: 80, height: 80, borderRadius: '50%', background: 'rgba(99, 102, 241, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px'}}>
+                        <Merge size={40} className="text-accent" />
                       </div>
-                      <span style={{fontSize: 10, marginTop: 8, color: '#999'}}>Page Ref: {pageIdx + 1}</span>
+                      <h2 style={{fontSize: '1.5rem', marginBottom: 16}}>Begin Neural Merge</h2>
+                      <p style={{color: '#64748b', maxWidth: 460, margin: '0 auto 32px'}}>Select two or more PDF documents to synthesize. You can arrange the global order in the Organizer after upload.</p>
+                      <button className="btn-primary" style={{width: 'auto', padding: '14px 40px'}}>
+                         Secure Multi-Select
+                      </button>
+                      <input id="merge-picker" type="file" multiple accept=".pdf" hidden onChange={handleAppendFile} />
                     </div>
-                  ))}
-                  <div className="page-cell add-new" onClick={() => document.getElementById('append-picker')?.click()} style={{cursor: 'pointer', border: '2px dashed var(--border-color)', background: 'transparent', height: 260, display: 'flex', flexDirection: 'column', justifyContent: 'center'}}>
-                    <Plus size={48} style={{opacity: 0.2, marginBottom: 16}} />
-                    <p style={{fontSize: 12, color: '#999'}}>Combine Another PDF</p>
-                    <input id="append-picker" type="file" hidden onChange={handleAppendFile} accept=".pdf" />
+
+                    <div style={{marginTop: 48, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24}}>
+                       <div className="insight-card">
+                          <div className="insight-label">FUSION MODE</div>
+                          <div className="insight-value" style={{fontSize: '1.2rem'}}>Sequential Buffer</div>
+                       </div>
+                       <div className="insight-card">
+                          <div className="insight-label">LIMITS</div>
+                          <div className="insight-value" style={{fontSize: '1.2rem'}}>100MB / payload</div>
+                       </div>
+                       <div className="insight-card">
+                          <div className="insight-label">VERIFICATION</div>
+                          <div className="insight-value" style={{fontSize: '1.2rem'}}>Automatic CRC32</div>
+                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTool === 'organize' && (
+                <div style={{padding: '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
+                  <div className="workspace-header" style={{margin: '0 0 32px 0', border: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                    <div>
+                      <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Neural Page Organizer</h1>
+                      <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>Architectural layout control via payload reordering.</p>
+                    </div>
+                    <div style={{display: 'flex', gap: 12}}>
+                      <button className="btn-secondary" style={{width: 'auto', padding: '10px 20px'}} onClick={() => setPageOrder(prev => [...prev].reverse())}>
+                         Reverse Order
+                      </button>
+                      <button className="btn-primary" style={{width: 'auto', padding: '10px 24px', background: 'var(--accent-gradient)'}} onClick={handleProcessPdf}>
+                        <Download size={18} style={{marginRight: 8}} /> Commit & Download
+                      </button>
+                      <button className="btn-secondary" style={{width: 'auto', padding: '10px 24px'}} onClick={() => document.getElementById('append-picker')?.click()}>
+                        <Plus size={18} style={{marginRight: 8}} /> Combine Payload
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="page-grid" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 32, padding: 4}}>
+                    {pageOrder.map((pageIdx, i) => (
+                      <div key={`${pageIdx}-${i}`} className="animate-in" style={{background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: 20, overflow: 'hidden', position: 'relative', boxShadow: '0 20px 50px rgba(0,0,0,0.15)', transition: 'all 0.3s ease'}}>
+                        <div style={{aspectRatio: '1/1.4', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000', position: 'relative'}}>
+                           {previewImages[pageIdx] && <img src={previewImages[pageIdx]} alt={`Page ${pageIdx + 1}`} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: `rotate(${pageRotations[i] || 0}deg)`}} />}
+                           <div style={{position: 'absolute', top: 12, left: 12, background: 'var(--accent-gradient)', color: 'white', fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 20, boxShadow: '0 4px 10px rgba(0,0,0,0.3)'}}>{i + 1}</div>
+                        </div>
+                        
+                        <div style={{padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)'}}>
+                           <span style={{fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)'}}>Source Index: {pageIdx + 1}</span>
+                           <div style={{display: 'flex', gap: 6}}>
+                              <button onClick={() => handlePageAction('rotate', i)} className="action-dot" title="Rotate Page 90°"><RotateCw size={14} style={{color: 'var(--accent-color)'}} /></button>
+                              <button onClick={() => handlePageAction('moveUp', i)} className="action-dot" title="Move Up"><RotateCw size={14} style={{transform: 'rotate(-90deg)'}} /></button>
+                              <button onClick={() => handlePageAction('moveDown', i)} className="action-dot" title="Move Down"><RotateCw size={14} style={{transform: 'rotate(90deg)'}} /></button>
+                              <button onClick={() => handlePageAction('duplicate', i)} className="action-dot" title="Duplicate"><Plus size={14} /></button>
+                              <button onClick={() => handlePageAction('delete', i)} className="action-dot delete" title="Remove"><Trash2 size={14} /></button>
+                           </div>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="page-cell add-new" onClick={() => document.getElementById('append-picker')?.click()} style={{cursor: 'pointer', border: '3px dashed var(--border-color)', borderRadius: 20, background: 'rgba(255,255,255,0.02)', aspectRatio: '1/1.4', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 16, transition: 'var(--transition)'}} 
+                         onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent-color)'}
+                         onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-color)'}>
+                      <div style={{width: 64, height: 64, borderRadius: '50%', background: 'rgba(99, 102, 241, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
+                        <Plus size={32} className="text-accent" />
+                      </div>
+                      <p style={{fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)'}}>Append Document</p>
+                      <input id="append-picker" type="file" hidden onChange={handleAppendFile} accept=".pdf" />
+                    </div>
                   </div>
                 </div>
               )}
@@ -1320,7 +1502,51 @@ function App() {
                 </div>
               )}
 
-              {['dashboard', 'organize', 'ai_summary', 'redact', 'create_pdf', 'ai_insight'].includes((activeTool || '') as string) === false && (
+              {activeTool === 'split' && (
+                <div style={{padding: '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
+                  <div className="workspace-header" style={{margin: '0 0 32px 0', border: 'none'}}>
+                    <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Instant Page Extraction</h1>
+                    <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>Deconstruct payloads with precision range-based indexing.</p>
+                  </div>
+
+                  <div className="ai-stats" style={{gridTemplateColumns: 'minmax(300px, 1fr) 350px'}}>
+                     <div className="ai-card" style={{padding: 32}}>
+                        <h4 style={{fontSize: '1.2rem', marginBottom: 20}}>Extraction Topology</h4>
+                        <div className="control-group">
+                           <label>Page Range (e.g., 1-5, 8, 10-12)</label>
+                           <input type="text" value={pageRange} onChange={e => setPageRange(e.target.value)} placeholder="all" style={{fontSize: '1.1rem', padding: '12px 18px'}} />
+                        </div>
+                        <div style={{marginTop: 32, display: 'flex', gap: 20}}>
+                           <button className="btn-primary" style={{flex: 1, padding: '16px'}} onClick={() => { appendLog("Extraction sequence initiated."); handleProcessPdf(); }}>
+                              <Download size={20} style={{marginRight: 10}} /> Extract Range as PDF
+                           </button>
+                           <button className="btn-secondary" style={{width: 'auto', padding: '16px 24px'}} onClick={() => { setExtractMode('individual'); handleProcessPdf(); }}>
+                              Split into Individual Pages
+                           </button>
+                        </div>
+                     </div>
+
+                     <div className="ai-card" style={{borderLeft: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.01)'}}>
+                        <h4 style={{marginBottom: 16}}>System Analytics</h4>
+                        <div style={{display: 'flex', flexDirection: 'column', gap: 16}}>
+                           <div style={{display: 'flex', justifyContent: 'space-between'}}>
+                              <span style={{color: '#64748b'}}>Input Buffer</span>
+                              <span style={{fontWeight: 600}}>{previewImages.length} Pages</span>
+                           </div>
+                           <div style={{display: 'flex', justifyContent: 'space-between'}}>
+                              <span style={{color: '#64748b'}}>Target Slices</span>
+                              <span style={{fontWeight: 600, color: 'var(--accent-color)'}}>{parsePageRange(pageRange, previewImages.length).length} Pages</span>
+                           </div>
+                           <div className="insight-card" style={{marginTop: 12, padding: 12}}>
+                              <ShieldCheck size={16} /> Encrypted Buffer Ready
+                           </div>
+                        </div>
+                     </div>
+                  </div>
+                </div>
+              )}
+
+              {['dashboard', 'organize', 'ai_summary', 'redact', 'create_pdf', 'ai_insight', 'merge', 'split'].includes((activeTool || '') as string) === false && (
                 <div className="editor-layout">
                   <div className="preview-strip">
                     {previewImages.map((img, i) => (
@@ -1374,9 +1600,12 @@ function App() {
                         <button className="toolbar-btn" onClick={() => setZoomLevel(z => Math.max(25, z - 25))} title="Zoom Out"><ZoomOut size={16} /></button>
                         <span className="zoom-display">{zoomLevel}%</span>
                         <button className="toolbar-btn" onClick={() => setZoomLevel(z => Math.min(400, z + 25))} title="Zoom In"><ZoomIn size={16} /></button>
-                        <div className="tool-sep" />
-
-                        {/* SAVE */}
+                         <button className="toolbar-btn mobile-only" onClick={() => setIsConfigOpen(!isConfigOpen)} title="Configure Tool" style={{marginLeft: 8}}>
+                           <Settings size={16} />
+                         </button>
+                         <div className="tool-sep" />
+ 
+                         {/* SAVE */}
                         <button className="toolbar-btn" onClick={handleProcessPdf} title="Save & Download Edited PDF" style={{background: '#10b981', color: 'white', borderRadius: 6, padding: '0 12px', width: 'auto', gap: 4, display: 'flex'}}>
                           <Download size={14} /> Save
                         </button>
@@ -1613,7 +1842,11 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="controls-panel">
+                  <div className={`controls-panel ${isConfigOpen ? 'open' : ''}`}>
+                    <div className="mobile-only" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12}}>
+                      <h3 style={{margin: 0}}>Settings</h3>
+                      <button onClick={() => setIsConfigOpen(false)}><X size={20} /></button>
+                    </div>
                     <h3><Settings size={18} style={{verticalAlign: 'middle', marginRight: 8}} /> Config</h3>
                     
                     {activeTool === 'content_edit' && !selectedOverlayId && (
@@ -1713,7 +1946,7 @@ function App() {
                     )}
 
 
-                     {(activeTool || '') === 'protect' && (
+                      {activeTool === 'protect' && (
                        <div className="control-group">
                          <label>Security Key</label>
                          <input 
@@ -1727,7 +1960,7 @@ function App() {
                        </div>
                      )}
 
-                     {['merge', 'split', 'watermark'].includes((activeTool || '') as any) && (
+                      {(['merge', 'split', 'watermark'] as ToolType[]).includes(activeTool as ToolType) && (
                        <div className="control-group">
                          <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8}}>
                           <input type="checkbox" checked={autoPageNumbers} onChange={e => setAutoPageNumbers(e.target.checked)} /> 
@@ -1741,7 +1974,7 @@ function App() {
                     )}
 
                     <div style={{marginTop: 20, borderTop: '1px solid var(--border-color)', paddingTop: 20}}>
-                      {(['split', 'rotate', 'watermark', 'convert_jpg'].includes((activeTool || '') as any)) && (
+                      {((['split', 'rotate', 'watermark', 'convert_jpg'] as ToolType[]).includes(activeTool as ToolType)) && (
                       <div className="control-group">
                         <label>Page Range Selection</label>
                         <input value={pageRange} onChange={e => setPageRange(e.target.value)} placeholder="e.g. 1,3-5,all" />
@@ -1853,7 +2086,7 @@ function App() {
                       </>
                     )}
 
-                    {activeTool === 'ocr' && (
+                      {activeTool === 'ocr' && (
                       <div className="control-group">
                         <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer'}}>
                           <input type="checkbox" checked={ocrPreProcess} onChange={e => setOcrPreProcess(e.target.checked)} /> 
@@ -1862,7 +2095,7 @@ function App() {
                         <p style={{fontSize: 10, color: '#666', marginTop: 4}}>Auto-adjusts exposure for blurry scans.</p>
                       </div>
                     )}
-                    {(['convert_word', 'extract_text'].includes((activeTool || '') as any)) && (
+                    {((['convert_word', 'extract_text'] as ToolType[]).includes(activeTool as ToolType)) && (
                       <div className="control-group">
                          <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer'}}>
                           <input type="checkbox" checked={layoutPreservation} onChange={e => setLayoutPreservation(e.target.checked)} /> 
