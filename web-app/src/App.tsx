@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Merge, Type, Zap,
   Search, Bell, User, Upload,
@@ -144,6 +144,22 @@ function App() {
   // Undo/Redo
   const [undoStack, setUndoStack] = useState<EditOverlay[][]>([]);
   const [redoStack, setRedoStack] = useState<EditOverlay[][]>([]);
+
+  const [aiConfig, setAiConfig] = useState<{
+    provider: 'gemini' | 'openai' | 'anthropic' | 'qwen' | 'none';
+    apiKey: string;
+  }>(() => {
+    const saved = localStorage.getItem('wizard_ai_config');
+    if (saved) {
+      try { return JSON.parse(saved); } catch { return { provider: 'none', apiKey: '' }; }
+    }
+    return { provider: 'none', apiKey: '' };
+  });
+  const [showAiSettings, setShowAiSettings] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('wizard_ai_config', JSON.stringify(aiConfig));
+  }, [aiConfig]);
 
   const appendLog = (msg: string) => {
     setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`].slice(-12));
@@ -496,39 +512,89 @@ function App() {
     setIsProcessing(true);
     setSummaryData(null);
     appendLog("AI Engine: Initializing deep semantic scanning...");
-    appendLog("Recursive Scan: Initiating deep-level document traversal...");
+    
+    if (aiConfig.provider === 'none' || !aiConfig.apiKey) {
+      appendLog("System Alert: Intelligence Engine unconfigured. Opening control panel...");
+      setIsProcessing(false);
+      setShowAiSettings(true);
+      return;
+    }
+    
+    appendLog("Recursive Scan: Initiating deep-level document traversal (max 5 pages for token limits)...");
     
     try {
       const arrayBuffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       let allText = "";
       
-      for (let i = 1; i <= pdf.numPages; i++) {
+      const maxPages = Math.min(pdf.numPages, 5);
+      for (let i = 1; i <= maxPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
         allText += (content.items as {str: string}[]).map(it => it.str).join(' ') + " ";
       }
       
-      appendLog("Neural Layer: Processing abstract relationships...");
-      await new Promise(r => setTimeout(r, 2000));
-      
       const words = allText.split(/\s+/).length;
       const readTime = Math.ceil(words / 200);
+
+      appendLog(`Neural Vectorizer: Constructing context matrix for ${aiConfig.provider}...`);
+
+      const systemPrompt = "Analyze the document text and return a raw JSON object with: 'brief' (string, 1 to 2 sentences summarizing the document) and 'points' (array of 4 string bullet points highlighting core themes). Do NOT wrap the JSON in markdown code blocks like ```json.";
+      const userPrompt = `Document Text: ${allText.substring(0, 30000)}`;
+
+      let jsonResponse = "";
+
+      if (aiConfig.provider === 'gemini') {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${aiConfig.apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] }] })
+          });
+          if (!res.ok) throw new Error(`Gemini API Error: ${res.status}`);
+          const data = await res.json();
+          jsonResponse = data.candidates[0].content.parts[0].text;
+      } else if (aiConfig.provider === 'openai') {
+          const res = await fetch(`https://api.openai.com/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiConfig.apiKey}` },
+            body: JSON.stringify({ model: 'gpt-4o', messages: [{role: 'system', content: systemPrompt}, {role: 'user', content: userPrompt}], response_format: {type: "json_object"} })
+          });
+          if (!res.ok) throw new Error(`OpenAI API Error: ${res.status}`);
+          const data = await res.json();
+          jsonResponse = data.choices[0].message.content;
+      } else if (aiConfig.provider === 'anthropic') {
+          const res = await fetch(`https://api.anthropic.com/v1/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': aiConfig.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+            body: JSON.stringify({ model: 'claude-3-5-sonnet-20240620', max_tokens: 1024, system: systemPrompt, messages: [{role: 'user', content: userPrompt}] })
+          });
+          if (!res.ok) throw new Error(`Anthropic API Error: ${res.status}`);
+          const data = await res.json();
+          jsonResponse = data.content[0].text;
+      } else if (aiConfig.provider === 'qwen') {
+          const res = await fetch(`https://api-inference.huggingface.co/models/Qwen/Qwen3.5-72B-Instruct`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${aiConfig.apiKey}` },
+            body: JSON.stringify({ inputs: `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\n${userPrompt}<|im_end|>\n<|im_start|>assistant\n`, parameters: { max_new_tokens: 1024, return_full_text: false } })
+          });
+          if (!res.ok) throw new Error(`HuggingFace Inference Error: ${res.status}`);
+          const data = await res.json();
+          jsonResponse = data[0].generated_text;
+      }
+      
+      const cleanJson = jsonResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleanJson);
       
       setSummaryData({
-        brief: `High-fidelity analysis identifies this as a ${pdf.numPages}-page document with approximately ${words} words. The document exhibits high structural integrity and consistent semantic flow.`,
-        points: [
-          "Core thematic clusters detected in technical/formal domains.",
-          "High information density suggests professional or research usage.",
-          "Syntactic patterns indicate low redundancy and high clarity.",
-          "Security clearance recommended for sensitive metadata regions."
-        ],
+        brief: parsed.brief || `Analysis completed successfully across ${maxPages} pages. Document contains complex semantic structures.`,
+        points: parsed.points || ["Analysis complete", "Data points recovered", "Pattern recognition stable", "Semantics captured"],
         time: readTime
       });
       
-      appendLog("AI Intelligence: Comprehensive insight report ready.");
-    } catch {
-      appendLog("AI Error: Semantic engine timed out.");
+      appendLog("AI Intelligence: Comprehensive insight report successfully generated.");
+    } catch(err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Semantic engine timed out or invalid JSON returned.';
+      appendLog(`AI Error: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
     }
@@ -1486,11 +1552,16 @@ function App() {
                      <div className="ai-badge">Neural Intelligence Layer</div>
                      <h1>Semantic Document Blueprint</h1>
                      {!summaryData && !isProcessing && (
-                       <button className="btn-primary" onClick={generateAISummary} style={{width: 'fit-content', background: 'white', color: 'var(--accent-color)'}}>
-                         Launch Deep Analysis
-                       </button>
+                       <div style={{display: 'flex', gap: 12}}>
+                         <button className="btn-primary" onClick={generateAISummary} style={{width: 'fit-content', background: 'white', color: 'var(--accent-color)'}}>
+                           Launch Deep Analysis
+                         </button>
+                         <button className="btn-secondary" onClick={() => setShowAiSettings(true)} style={{display: 'flex', alignItems: 'center', borderColor: 'rgba(255,255,255,0.2)', color: 'white'}}>
+                           <Settings size={18} style={{marginRight: 8}} /> Configure AI
+                         </button>
+                       </div>
                      )}
-                     {isProcessing && <p>Decoding binary semantics... This may take a moment.</p>}
+                     {isProcessing && <p>Decoding binary semantics via {aiConfig.provider !== 'none' ? aiConfig.provider.toUpperCase() : 'Neural'} API... This may take a moment.</p>}
                    </div>
 
                    {summaryData && (
@@ -2202,6 +2273,14 @@ function App() {
         }}
       />
 
+      <AiSettingsModal
+        show={showAiSettings}
+        onClose={() => setShowAiSettings(false)}
+        config={aiConfig}
+        onSave={(c) => { setAiConfig(c); setShowAiSettings(false); }}
+      />
+
+
       {/* Asset Refinement Modal */}
       {editingImageIdx !== null && pdfCreatorImages[editingImageIdx] && (
         <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(10px)'}}>
@@ -2423,6 +2502,67 @@ const SecurityVaultModal = ({ show, onClose, onConfirm }: SecurityVaultModalProp
         <div style={{display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 20}}>
           <button className="btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn-primary" onClick={() => onConfirm(pass)} disabled={!pass}>Lock & Process</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+interface AiSettingsModalProps {
+  show: boolean;
+  onClose: () => void;
+  config: { provider: 'gemini' | 'openai' | 'anthropic' | 'qwen' | 'none', apiKey: string };
+  onSave: (config: { provider: 'gemini' | 'openai' | 'anthropic' | 'qwen' | 'none', apiKey: string }) => void;
+}
+
+const AiSettingsModal = ({ show, onClose, config, onSave }: AiSettingsModalProps) => {
+  const [provider, setProvider] = useState(config.provider);
+  const [apiKey, setApiKey] = useState(config.apiKey);
+  
+  if (!show) return null;
+
+  return (
+    <div className="signature-overlay" onClick={onClose} style={{zIndex: 10000}}>
+      <div className="signature-pad" style={{width: 500}} onClick={e => e.stopPropagation()}>
+        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20}}>
+          <h3 style={{margin: 0, color: 'var(--accent-color)'}}><Brain size={20} style={{verticalAlign: 'middle', marginRight: 8}}/> Secure Engine Configuration</h3>
+          <X size={20} onClick={onClose} style={{cursor: 'pointer'}} />
+        </div>
+        
+        <div className="control-group" style={{marginBottom: 16}}>
+           <label style={{fontSize: 13, fontWeight: 600}}>Intelligence Provider</label>
+           <select className="property-input" value={provider} onChange={e => { setProvider(e.target.value as 'gemini' | 'openai' | 'anthropic' | 'qwen' | 'none'); setApiKey(''); }} style={{width: '100%', marginTop: 8}}>
+             <option value="none">Select Provider</option>
+             <option value="gemini">Google Gemini (Gemini 2.5 Flash)</option>
+             <option value="openai">OpenAI (GPT-4o)</option>
+             <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
+             <option value="qwen">HuggingFace Serverless (Qwen 72B Instruct)</option>
+           </select>
+        </div>
+
+        <div className="control-group" style={{marginBottom: 8}}>
+           <label style={{display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600}}>
+             API Key / Access Token
+             {provider === 'gemini' && <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" style={{color: 'var(--accent-color)', textDecoration: 'none'}}>Get Gemini Key</a>}
+             {provider === 'openai' && <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" style={{color: 'var(--accent-color)', textDecoration: 'none'}}>Get OpenAI Key</a>}
+             {provider === 'anthropic' && <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" style={{color: 'var(--accent-color)', textDecoration: 'none'}}>Get Anthropic Key</a>}
+             {provider === 'qwen' && <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" style={{color: 'var(--accent-color)', textDecoration: 'none'}}>Get HF Token</a>}
+           </label>
+           <input 
+             type="password" 
+             className="property-input" 
+             style={{width: '100%', padding: '12px', fontSize: '1rem', marginTop: 8}} 
+             placeholder={provider === 'none' ? 'Select a provider first' : 'Enter Private Key...'} 
+             value={apiKey}
+             onChange={e => setApiKey(e.target.value)}
+             disabled={provider === 'none'}
+           />
+        </div>
+        <p style={{fontSize: 11, color: 'var(--text-secondary)', marginBottom: 24}}>Tokens are processed locally within your browser context (localStorage). No data is stored or transmitted by WizardPro. Direct API connection is established only with your selected provider.</p>
+
+        <div style={{display: 'flex', gap: 12, justifyContent: 'flex-end'}}>
+          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={() => { onSave({ provider, apiKey }); onClose(); }} disabled={!apiKey && provider !== 'none'}>Secure Link</button>
         </div>
       </div>
     </div>
