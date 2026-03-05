@@ -101,6 +101,12 @@ function App() {
   const [layoutPreservation, setLayoutPreservation] = useState(true);
   const [allowPrinting, setAllowPrinting] = useState(true);
 
+  // Create PDF State
+  const [pdfCreatorImages, setPdfCreatorImages] = useState<{src: string; name: string; rotation: number; file: File}[]>([]);
+  const [pdfPageSize, setPdfPageSize] = useState<'auto' | 'a4' | 'letter' | 'legal'>('auto');
+  const [pdfOrientation, setPdfOrientation] = useState<'portrait' | 'landscape'>('portrait');
+  const [pdfMargin, setPdfMargin] = useState(20);
+
   // Interaction Layer Control
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -877,30 +883,89 @@ function App() {
   };
 
   // === CREATE PDF FROM IMAGES ===
-  const createPdfFromImages = async (files: FileList) => {
+  const handleCreatorImageUpload = (files: FileList) => {
+    const newImages: typeof pdfCreatorImages = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      if (f.type.startsWith('image/')) {
+        newImages.push({ src: URL.createObjectURL(f), name: f.name, rotation: 0, file: f });
+      }
+    }
+    setPdfCreatorImages(prev => [...prev, ...newImages]);
+    appendLog(`Added ${newImages.length} images to PDF creator.`);
+  };
+
+  const moveCreatorImage = (idx: number, dir: number) => {
+    setPdfCreatorImages(prev => {
+      const arr = [...prev];
+      const target = idx + dir;
+      if (target < 0 || target >= arr.length) return arr;
+      [arr[idx], arr[target]] = [arr[target], arr[idx]];
+      return arr;
+    });
+  };
+
+  const rotateCreatorImage = (idx: number) => {
+    setPdfCreatorImages(prev => prev.map((img, i) => i === idx ? { ...img, rotation: (img.rotation + 90) % 360 } : img));
+  };
+
+  const removeCreatorImage = (idx: number) => {
+    setPdfCreatorImages(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const createPdfFromImages = async () => {
+    if (pdfCreatorImages.length === 0) return;
     try {
       setIsProcessing(true);
       appendLog('Creating PDF from images...');
       const pdfDoc = await PDFDocument.create();
+      const pageSizes: Record<string, [number, number]> = {
+        a4: [595.28, 841.89],
+        letter: [612, 792],
+        legal: [612, 1008],
+      };
 
-      for (let i = 0; i < files.length; i++) {
-        const imgFile = files[i];
-        const imgBytes = await imgFile.arrayBuffer();
+      for (let i = 0; i < pdfCreatorImages.length; i++) {
+        const item = pdfCreatorImages[i];
+        const imgBytes = await item.file.arrayBuffer();
         let img;
-        if (imgFile.type === 'image/png') {
+        if (item.file.type === 'image/png') {
           img = await pdfDoc.embedPng(imgBytes);
         } else {
           img = await pdfDoc.embedJpg(imgBytes);
         }
-        const page = pdfDoc.addPage([img.width, img.height]);
-        page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
-        appendLog(`Embedded ${imgFile.name} as page ${i + 1}`);
+
+        let pageW: number, pageH: number;
+        if (pdfPageSize === 'auto') {
+          pageW = img.width + pdfMargin * 2;
+          pageH = img.height + pdfMargin * 2;
+        } else {
+          const [w, h] = pageSizes[pdfPageSize];
+          pageW = pdfOrientation === 'landscape' ? h : w;
+          pageH = pdfOrientation === 'landscape' ? w : h;
+        }
+
+        const page = pdfDoc.addPage([pageW, pageH]);
+        const drawW = pageW - pdfMargin * 2;
+        const drawH = pageH - pdfMargin * 2;
+        const scale = Math.min(drawW / img.width, drawH / img.height);
+        const finalW = img.width * scale;
+        const finalH = img.height * scale;
+        const xOff = pdfMargin + (drawW - finalW) / 2;
+        const yOff = pdfMargin + (drawH - finalH) / 2;
+
+        if (item.rotation !== 0) {
+          page.pushOperators();
+        }
+        page.drawImage(img, { x: xOff, y: yOff, width: finalW, height: finalH });
+
+        appendLog(`Page ${i + 1}: ${item.name} (${item.rotation}°)`);
       }
 
       const pdfBytes = await pdfDoc.save();
       const blob = new Blob([pdfBytes as BlobPart], { type: 'application/pdf' });
-      saveAs(blob, 'created_from_images.pdf');
-      appendLog(`PDF created with ${files.length} pages. Download started.`);
+      saveAs(blob, 'created_document.pdf');
+      appendLog(`PDF created with ${pdfCreatorImages.length} pages. Download started.`);
     } catch (err) {
       appendLog(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
     } finally {
@@ -985,7 +1050,7 @@ function App() {
             </div>
           )}
 
-          <button className="nav-item home-btn" onClick={() => { setActiveTool(null); setSidebarOpen(false); }} style={{marginTop: 32}}>
+          <button className="nav-item home-btn" onClick={() => { setActiveTool('dashboard'); setSidebarOpen(false); }} style={{marginTop: 32}}>
             <Home size={18} /> Command Center
           </button>
         </div>
@@ -1015,7 +1080,80 @@ function App() {
         </header>
 
         <section className="workspace">
-          {!file ? (
+          {/* Create PDF works without a file loaded */}
+          {activeTool === 'create_pdf' ? (
+            <div style={{padding: 24, overflow: 'auto', height: '100%'}}>
+              <div className="workspace-header">
+                <h1 className="workspace-title">Create PDF from Images</h1>
+                <p className="workspace-subtitle">Upload images, arrange pages, set orientation & page size, then export.</p>
+              </div>
+
+              <div style={{display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center'}}>
+                <button className="btn-primary" style={{width: 'auto', padding: '10px 20px'}} onClick={() => document.getElementById('creator-picker')?.click()}>
+                  <Upload size={16} style={{marginRight: 6}} /> Add Images
+                </button>
+                <input id="creator-picker" type="file" multiple accept="image/jpeg,image/png,image/jpg" hidden onChange={(e) => e.target.files && handleCreatorImageUpload(e.target.files)} />
+
+                <select value={pdfPageSize} onChange={e => setPdfPageSize(e.target.value as 'auto'|'a4'|'letter'|'legal')} style={{background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', padding: '8px 12px', borderRadius: 6}}>
+                  <option value="auto">Auto Size (fit to image)</option>
+                  <option value="a4">A4 (210×297mm)</option>
+                  <option value="letter">US Letter (8.5×11")</option>
+                  <option value="legal">US Legal (8.5×14")</option>
+                </select>
+
+                {pdfPageSize !== 'auto' && (
+                  <select value={pdfOrientation} onChange={e => setPdfOrientation(e.target.value as 'portrait'|'landscape')} style={{background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', padding: '8px 12px', borderRadius: 6}}>
+                    <option value="portrait">Portrait</option>
+                    <option value="landscape">Landscape</option>
+                  </select>
+                )}
+
+                <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
+                  <label style={{fontSize: 12, color: '#94a3b8'}}>Margin:</label>
+                  <input type="number" value={pdfMargin} onChange={e => setPdfMargin(Number(e.target.value))} min={0} max={100} style={{width: 60, background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-color)', padding: '6px 8px', borderRadius: 4}} />
+                  <span style={{fontSize: 11, color: '#64748b'}}>pt</span>
+                </div>
+
+                {pdfCreatorImages.length > 0 && (
+                  <button className="btn-primary" style={{width: 'auto', padding: '10px 24px', marginLeft: 'auto', background: '#10b981'}} onClick={createPdfFromImages} disabled={isProcessing}>
+                    <Download size={16} style={{marginRight: 6}} /> {isProcessing ? 'Creating...' : `Create PDF (${pdfCreatorImages.length} pages)`}
+                  </button>
+                )}
+              </div>
+
+              {pdfCreatorImages.length === 0 ? (
+                <div style={{border: '2px dashed var(--border-color)', borderRadius: 12, padding: 60, textAlign: 'center', cursor: 'pointer'}} onClick={() => document.getElementById('creator-picker')?.click()}>
+                  <Upload size={48} style={{opacity: 0.3, marginBottom: 16}} />
+                  <p style={{color: '#64748b', fontSize: 16}}>Click or drag images here</p>
+                  <p style={{color: '#475569', fontSize: 12}}>Supports JPG, PNG. You can reorder and rotate after upload.</p>
+                </div>
+              ) : (
+                <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16}}>
+                  {pdfCreatorImages.map((img, idx) => (
+                    <div key={idx} style={{background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: 8, overflow: 'hidden', position: 'relative'}}>
+                      <div style={{aspectRatio: '3/4', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#1e293b'}}>
+                        <img src={img.src} alt={img.name} style={{maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: `rotate(${img.rotation}deg)`}} />
+                      </div>
+                      <div style={{padding: 8, display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'center'}}>
+                        <button onClick={() => moveCreatorImage(idx, -1)} title="Move Left" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#94a3b8', border: '1px solid var(--border-color)', borderRadius: 4, cursor: 'pointer'}}>◀</button>
+                        <button onClick={() => rotateCreatorImage(idx)} title="Rotate 90°" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#94a3b8', border: '1px solid var(--border-color)', borderRadius: 4, cursor: 'pointer'}}>↻</button>
+                        <button onClick={() => removeCreatorImage(idx)} title="Remove" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#ef4444', border: '1px solid #ef4444', borderRadius: 4, cursor: 'pointer'}}>✕</button>
+                        <button onClick={() => moveCreatorImage(idx, 1)} title="Move Right" style={{padding: '4px 6px', fontSize: 12, background: 'transparent', color: '#94a3b8', border: '1px solid var(--border-color)', borderRadius: 4, cursor: 'pointer'}}>▶</button>
+                      </div>
+                      <div style={{position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,0.7)', color: 'white', fontSize: 10, padding: '2px 6px', borderRadius: 4}}>#{idx + 1}</div>
+                      <div style={{fontSize: 10, color: '#64748b', padding: '0 8px 6px', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{img.name}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {processingLog.length > 0 && (
+                <div style={{marginTop: 16, background: '#0f172a', borderRadius: 8, padding: 12, fontFamily: 'monospace', fontSize: 11, color: '#22c55e', maxHeight: 120, overflow: 'auto'}}>
+                  {processingLog.map((log, i) => <div key={i}>$ {log}</div>)}
+                </div>
+              )}
+            </div>
+          ) : !file ? (
             <div className="upload-view">
               <div className="upload-box" onClick={() => document.getElementById('picker')?.click()}>
                 <Upload size={56} className="text-accent mb-4" />
@@ -1179,25 +1317,6 @@ function App() {
                         ))}
                      </div>
                    )}
-                </div>
-              )}
-
-              {/* === CREATE PDF FROM IMAGES === */}
-              {activeTool === 'create_pdf' && (
-                <div className="ai-dashboard">
-                  <div className="ai-hero">
-                    <div className="ai-badge">PDF Creator</div>
-                    <h1>Create PDF from Images</h1>
-                    <p>Select JPG or PNG images to combine into a single PDF document.</p>
-                    <input 
-                      type="file" 
-                      multiple 
-                      accept="image/jpeg,image/png,image/jpg" 
-                      onChange={(e) => e.target.files && createPdfFromImages(e.target.files)}
-                      style={{marginTop: 12}}
-                    />
-                    {isProcessing && <p>Creating PDF...</p>}
-                  </div>
                 </div>
               )}
 
