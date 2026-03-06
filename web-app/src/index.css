@@ -469,10 +469,12 @@ button {
 
 .text-layer span.editing {
   color: #0f172a;
-  background: rgba(99, 102, 241, 0.12);
+  background: rgba(255, 255, 255, 0.96);
   outline: 2px solid var(--accent-color);
   border-radius: 2px;
   z-index: 30;
+  padding: 0 1px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.95) inset;
 }
 
 .text-layer span::selection {
@@ -482,8 +484,10 @@ button {
 
 .text-layer span.edited {
   color: #000;
-  background: white;
+  background: rgba(255,255,255,0.98);
   z-index: 25;
+  padding: 0 1px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.95) inset;
 }
 
 /* === DRAWING CANVAS === */

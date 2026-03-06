@@ -1378,32 +1378,63 @@ function App() {
 
             const items = pageTextItems[pageNum];
             let textEditedCount = 0;
+            const stagedTextWrites: Array<{
+              x: number;
+              y: number;
+              size: number;
+              color: ReturnType<typeof rgb>;
+              text: string;
+              font?: PDFFont;
+            }> = [];
+
             for (const item of items) {
               const textChanged = item.str !== item.originalStr;
               const positionChanged = Math.abs(item.pdfX - item.originalPdfX) > 0.001 || Math.abs(item.pdfY - item.originalPdfY) > 0.001;
               if (!textChanged && !positionChanged) continue;
 
               const calibratedSize = Math.max(4, item.pdfFontSize * (textSizeAdjustPct / 100));
+              const drawFont = autoMatchTextStyle ? await getEmbeddedFont(item.fontName) : undefined;
+              const measuredNewWidth = drawFont
+                ? drawFont.widthOfTextAtSize(item.str || ' ', calibratedSize)
+                : Math.max((item.str || ' ').length * calibratedSize * 0.52, calibratedSize * 0.5);
 
-              // Blank out old glyphs before drawing updated text.
+              const clearPadX = Math.max(1.8, calibratedSize * 0.14);
+              const clearPadY = Math.max(1.5, calibratedSize * 0.18);
+              const clearStartX = Math.min(item.originalPdfX, item.pdfX) - clearPadX;
+              const clearStartY = Math.min(item.originalPdfY, item.pdfY + textBaselineAdjustPt) - clearPadY;
+              const clearWidth = Math.max(item.originalPdfWidth, measuredNewWidth) + Math.abs(item.pdfX - item.originalPdfX) + clearPadX * 2;
+              const clearHeight = Math.max(item.pdfFontSize, calibratedSize) * 1.42 + Math.abs((item.pdfY + textBaselineAdjustPt) - item.originalPdfY) + clearPadY * 2;
+
+              // Phase 1: erase the old and shifted target footprint aggressively.
               page.drawRectangle({
-                x: item.originalPdfX - 2,
-                y: item.originalPdfY - 2,
-                width: Math.max(item.originalPdfWidth + Math.max(2, item.originalPdfWidth * 0.08), calibratedSize * Math.max(item.originalStr.length * 0.18, 1)),
-                height: calibratedSize * 1.1,
+                x: clearStartX,
+                y: clearStartY,
+                width: clearWidth,
+                height: clearHeight,
                 color: rgb(1, 1, 1)
               });
 
-              page.drawText(item.str, {
+              // Phase 2: redraw text after all clears (prevents residual edge artifacts).
+              stagedTextWrites.push({
                 x: item.pdfX,
                 y: item.pdfY + textBaselineAdjustPt,
                 size: calibratedSize,
                 color: autoMatchTextStyle ? hexToPdfRgb(item.color) : hexToPdfRgb(currentColor),
-                font: autoMatchTextStyle ? await getEmbeddedFont(item.fontName) : undefined
+                text: item.str,
+                font: drawFont
               });
-
               textEditedCount++;
             }
+
+            stagedTextWrites.forEach(write => {
+              page.drawText(write.text, {
+                x: write.x,
+                y: write.y,
+                size: write.size,
+                color: write.color,
+                font: write.font
+              });
+            });
             if (textEditedCount > 0) appendLog(`Rebuilt ${textEditedCount} modified text blocks on Page ${pageNum}.`);
           }
 
