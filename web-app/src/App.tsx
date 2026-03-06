@@ -2221,7 +2221,7 @@ function App() {
               )}
 
               {activeTool === 'merge' && (
-                <div style={{padding: '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
+                <div style={{padding: isMobileViewport ? '16px 14px' : '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
                   <div className="workspace-header" style={{margin: '0 0 40px 0', border: 'none'}}>
                     <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Smart Multi-PDF Fusion</h1>
                     <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>Advanced buffer concatenation with binary integrity verification.</p>
@@ -2266,20 +2266,20 @@ function App() {
                       <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Neural Page Organizer</h1>
                       <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>Architectural layout control via payload reordering.</p>
                     </div>
-                    <div style={{display: 'flex', gap: 12, flexWrap: 'wrap'}}>
-                      <button className="btn-secondary" style={{width: 'auto', padding: '10px 20px'}} onClick={() => setPageOrder(prev => [...prev].reverse())}>
+                    <div style={{display: 'flex', gap: 12, flexWrap: 'wrap', width: isMobileViewport ? '100%' : 'auto'}}>
+                      <button className="btn-secondary" style={{width: isMobileViewport ? '100%' : 'auto', padding: '10px 20px'}} onClick={() => setPageOrder(prev => [...prev].reverse())}>
                          Reverse Order
                       </button>
-                      <button className="btn-primary" style={{width: 'auto', padding: '10px 24px', background: 'var(--accent-gradient)'}} onClick={handleProcessPdf}>
+                      <button className="btn-primary" style={{width: isMobileViewport ? '100%' : 'auto', padding: '10px 24px', background: 'var(--accent-gradient)'}} onClick={handleProcessPdf}>
                         <Download size={18} style={{marginRight: 8}} /> Commit & Download
                       </button>
-                      <button className="btn-secondary" style={{width: 'auto', padding: '10px 24px'}} onClick={() => document.getElementById('append-picker')?.click()}>
+                      <button className="btn-secondary" style={{width: isMobileViewport ? '100%' : 'auto', padding: '10px 24px'}} onClick={() => document.getElementById('append-picker')?.click()}>
                         <Plus size={18} style={{marginRight: 8}} /> Combine Payload
                       </button>
                     </div>
                   </div>
 
-                  <div className="page-grid" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 20, padding: 4}}>
+                  <div className="page-grid" style={{display: 'grid', gridTemplateColumns: isMobileViewport ? 'repeat(auto-fill, minmax(120px, 1fr))' : 'repeat(auto-fill, minmax(160px, 1fr))', gap: isMobileViewport ? 12 : 20, padding: 4}}>
                     {pageOrder.map((pageIdx, i) => (
                       <div key={`${pageIdx}-${i}`} className="animate-in" style={{background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: 20, overflow: 'hidden', position: 'relative', boxShadow: '0 20px 50px rgba(0,0,0,0.15)', transition: 'all 0.3s ease'}}>
                         <div style={{aspectRatio: '1/1.4', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000', position: 'relative'}}>
@@ -2287,18 +2287,27 @@ function App() {
                            <div style={{position: 'absolute', top: 12, left: 12, background: 'var(--accent-gradient)', color: 'white', fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 20, boxShadow: '0 4px 10px rgba(0,0,0,0.3)'}}>{i + 1}</div>
                         </div>
                         
-                        <div style={{padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.02)'}}>
+                        <div style={{padding: isMobileViewport ? '10px' : '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, background: 'rgba(255,255,255,0.02)'}}>
                            <span style={{fontSize: 11, fontWeight: 500, color: 'var(--text-secondary)'}}>Source Index: {pageIdx + 1}</span>
-                           <div style={{display: 'flex', gap: 6}}>
+                           <div style={{display: 'flex', gap: 6, flexWrap: 'wrap'}}>
                               <button onClick={() => handlePageAction('rotate', i)} className="action-dot" title="Rotate Page 90°"><RotateCw size={14} style={{color: 'var(--accent-color)'}} /></button>
-                              <button onClick={() => handlePageAction('moveUp', i)} className="action-dot" title="Move Up"><RotateCw size={14} style={{transform: 'rotate(-90deg)'}} /></button>
-                              <button onClick={() => handlePageAction('moveDown', i)} className="action-dot" title="Move Down"><RotateCw size={14} style={{transform: 'rotate(90deg)'}} /></button>
+                              <button onClick={() => handlePageAction('moveUp', i)} className="action-dot" title="Move Up" disabled={i === 0} style={{opacity: i === 0 ? 0.45 : 1}}><RotateCw size={14} style={{transform: 'rotate(-90deg)'}} /></button>
+                              <button onClick={() => handlePageAction('moveDown', i)} className="action-dot" title="Move Down" disabled={i === pageOrder.length - 1} style={{opacity: i === pageOrder.length - 1 ? 0.45 : 1}}><RotateCw size={14} style={{transform: 'rotate(90deg)'}} /></button>
                               <button onClick={() => handlePageAction('duplicate', i)} className="action-dot" title="Duplicate"><Plus size={14} /></button>
                               <button onClick={() => handlePageAction('delete', i)} className="action-dot delete" title="Remove"><Trash2 size={14} /></button>
                            </div>
                         </div>
                       </div>
                     ))}
+                    {pageOrder.length === 0 && (
+                      <div className="insight-card" style={{gridColumn: '1 / -1', textAlign: 'center', padding: isMobileViewport ? 20 : 32}}>
+                        <h3 style={{marginBottom: 8}}>No Pages In Organizer</h3>
+                        <p style={{color: 'var(--text-secondary)', marginBottom: 16}}>Use <strong>Combine Payload</strong> to append pages and begin arranging.</p>
+                        <button className="btn-primary" style={{width: isMobileViewport ? '100%' : 'auto', padding: '10px 20px'}} onClick={() => document.getElementById('append-picker')?.click()}>
+                          <Plus size={16} style={{marginRight: 8}} /> Add Pages
+                        </button>
+                      </div>
+                    )}
                     <div className="page-cell add-new" onClick={() => document.getElementById('append-picker')?.click()} style={{cursor: 'pointer', border: '3px dashed var(--border-color)', borderRadius: 20, background: 'rgba(255,255,255,0.02)', aspectRatio: '1/1.4', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 16, transition: 'var(--transition)'}} 
                          onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent-color)'}
                          onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-color)'}>
