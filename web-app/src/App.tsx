@@ -186,7 +186,9 @@ function App() {
   // Zoom
   const [zoomLevel, setZoomLevel] = useState(100);
   const pageWrapperRef = useRef<HTMLDivElement>(null);
+  const pageImageRef = useRef<HTMLImageElement>(null);
   const textMeasureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [pageDisplayScale, setPageDisplayScale] = useState(1);
 
   // === VISUAL EDITOR CANVAS PERSISTENCE ===
   useEffect(() => {
@@ -254,6 +256,25 @@ function App() {
   useEffect(() => {
     localStorage.setItem('wizard_ai_config', JSON.stringify(aiConfig));
   }, [aiConfig]);
+
+  useEffect(() => {
+    const updateScale = () => {
+      const img = pageImageRef.current;
+      if (!img || !img.naturalWidth || !img.clientWidth) {
+        setPageDisplayScale(1);
+        return;
+      }
+      setPageDisplayScale(img.clientWidth / img.naturalWidth);
+    };
+
+    updateScale();
+    window.addEventListener('resize', updateScale);
+    return () => window.removeEventListener('resize', updateScale);
+  }, [selectedPage, previewImages, zoomLevel]);
+
+  useEffect(() => {
+    setIsConfigOpen(false);
+  }, [activeTool]);
 
   const appendLog = (msg: string) => {
     setProcessingLog(prev => [...prev, `${new Date().toLocaleTimeString()} - ${msg}`].slice(-12));
@@ -390,26 +411,39 @@ function App() {
                 (pdfX + ((item.width || 0) * 0.5)) * scale,
                 Math.max(0, cssViewport.height - (pdfY * scale) - (fontSize * 0.5))
               );
-              items.push({
-                str: item.str,
-                originalStr: item.str,
-                originalX: pdfX * scale,
-                originalY: cssViewport.height - (pdfY * scale) - fontSize,
-                originalWidth: (item.width || 0) * scale,
-                x: pdfX * scale,
-                y: cssViewport.height - (pdfY * scale) - fontSize,
-                width: (item.width || 0) * scale,
-                height: fontSize * 1.2,
-                fontName: item.fontName || 'sans-serif',
-                fontSize: fontSize,
-                pdfX: pdfX,
-                pdfY: pdfY,
-                originalPdfX: pdfX,
-                originalPdfY: pdfY,
-                originalPdfWidth: (item.width || 0),
-                pdfWidth: (item.width || 0),
-                pdfFontSize: pdfFontSize,
-                color: sampledColor
+
+              const tokens = item.str.match(/\S+\s*/g) || [item.str];
+              const totalTokenChars = Math.max(tokens.reduce((sum, token) => sum + token.length, 0), 1);
+              let runningPdfX = pdfX;
+
+              tokens.forEach(token => {
+                const tokenCharRatio = token.length / totalTokenChars;
+                const tokenPdfWidth = Math.max((item.width || 0) * tokenCharRatio, 1);
+                const tokenX = runningPdfX * scale;
+
+                items.push({
+                  str: token,
+                  originalStr: token,
+                  originalX: tokenX,
+                  originalY: cssViewport.height - (pdfY * scale) - fontSize,
+                  originalWidth: tokenPdfWidth * scale,
+                  x: tokenX,
+                  y: cssViewport.height - (pdfY * scale) - fontSize,
+                  width: tokenPdfWidth * scale,
+                  height: fontSize * 1.2,
+                  fontName: item.fontName || 'sans-serif',
+                  fontSize: fontSize,
+                  pdfX: runningPdfX,
+                  pdfY: pdfY,
+                  originalPdfX: runningPdfX,
+                  originalPdfY: pdfY,
+                  originalPdfWidth: tokenPdfWidth,
+                  pdfWidth: tokenPdfWidth,
+                  pdfFontSize: pdfFontSize,
+                  color: sampledColor
+                });
+
+                runningPdfX += tokenPdfWidth;
               });
             }
           }
@@ -1284,8 +1318,8 @@ function App() {
               page.drawRectangle({
                 x: item.originalPdfX - 2,
                 y: item.originalPdfY - 2,
-                width: Math.max(item.originalPdfWidth + (item.originalPdfWidth * 0.25), calibratedSize * Math.max(item.originalStr.length * 0.4, 1)),
-                height: calibratedSize * 1.35,
+                width: Math.max(item.originalPdfWidth + Math.max(2, item.originalPdfWidth * 0.08), calibratedSize * Math.max(item.originalStr.length * 0.18, 1)),
+                height: calibratedSize * 1.1,
                 color: rgb(1, 1, 1)
               });
 
@@ -2105,7 +2139,7 @@ function App() {
                       <input id="merge-picker" type="file" multiple accept=".pdf" hidden onChange={handleAppendFile} />
                     </div>
 
-                    <div style={{marginTop: 48, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 24}}>
+                    <div style={{marginTop: 48, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 24}}>
                        <div className="insight-card">
                           <div className="insight-label">FUSION MODE</div>
                           <div className="insight-value" style={{fontSize: '1.2rem'}}>Sequential Buffer</div>
@@ -2125,12 +2159,12 @@ function App() {
 
               {activeTool === 'organize' && (
                 <div style={{padding: '32px 40px', overflow: 'auto', height: '100%', background: 'var(--bg-color)'}}>
-                  <div className="workspace-header" style={{margin: '0 0 32px 0', border: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                  <div className="workspace-header" style={{margin: '0 0 32px 0', border: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', rowGap: 12}}>
                     <div>
                       <h1 className="workspace-title" style={{fontSize: '2.5rem', letterSpacing: '-0.02em'}}>Neural Page Organizer</h1>
                       <p className="workspace-subtitle" style={{fontSize: '1.1rem'}}>Architectural layout control via payload reordering.</p>
                     </div>
-                    <div style={{display: 'flex', gap: 12}}>
+                    <div style={{display: 'flex', gap: 12, flexWrap: 'wrap'}}>
                       <button className="btn-secondary" style={{width: 'auto', padding: '10px 20px'}} onClick={() => setPageOrder(prev => [...prev].reverse())}>
                          Reverse Order
                       </button>
@@ -2143,7 +2177,7 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="page-grid" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 32, padding: 4}}>
+                  <div className="page-grid" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 20, padding: 4}}>
                     {pageOrder.map((pageIdx, i) => (
                       <div key={`${pageIdx}-${i}`} className="animate-in" style={{background: 'var(--bg-surface)', border: '1px solid var(--border-color)', borderRadius: 20, overflow: 'hidden', position: 'relative', boxShadow: '0 20px 50px rgba(0,0,0,0.15)', transition: 'all 0.3s ease'}}>
                         <div style={{aspectRatio: '1/1.4', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000', position: 'relative'}}>
@@ -2458,6 +2492,9 @@ function App() {
                         <button className="toolbar-btn" onClick={handleProcessPdf} title="Save & Download Edited PDF" style={{background: '#10b981', color: 'white', borderRadius: 6, padding: '0 12px', width: 'auto', gap: 4, display: 'flex'}}>
                           <Download size={14} /> Save
                         </button>
+                        <button className="toolbar-btn mobile-only" onClick={() => setIsConfigOpen(!isConfigOpen)} title="Configure Tool" style={{marginLeft: 8}}>
+                          <Settings size={16} />
+                        </button>
                       </div>
                     )}
 
@@ -2507,9 +2544,18 @@ function App() {
                           style={{ transform: `scale(${zoomLevel / 100})`, transformOrigin: 'top left' }}
                         >
                           <img 
+                            ref={pageImageRef}
                             src={previewImages[selectedPage - 1]} 
                             alt={`Page ${selectedPage}`} 
                             draggable={false} 
+                            onLoad={() => {
+                              const img = pageImageRef.current;
+                              if (img?.naturalWidth && img.clientWidth) {
+                                setPageDisplayScale(img.clientWidth / img.naturalWidth);
+                              } else {
+                                setPageDisplayScale(1);
+                              }
+                            }}
                             onMouseDown={(e) => {
                               if (activeEditorTool !== 'cursor' && activeEditorTool !== 'hand') {
                                 pushUndo();
@@ -2526,12 +2572,12 @@ function App() {
                                   key={idx}
                                   className={`${editingTextId === `${selectedPage}-${idx}` ? 'editing' : ''} ${item.str !== item.originalStr ? 'edited' : ''}`}
                                   style={{
-                                    left: item.x,
-                                    top: item.y,
-                                    fontSize: item.fontSize,
+                                    left: item.x * pageDisplayScale,
+                                    top: item.y * pageDisplayScale,
+                                    fontSize: item.fontSize * pageDisplayScale,
                                     fontFamily: item.fontName || 'sans-serif',
-                                    width: item.width || 'auto',
-                                    height: item.height,
+                                    width: (item.width || 0) * pageDisplayScale || 'auto',
+                                    height: item.height * pageDisplayScale,
                                     color: editingTextId === `${selectedPage}-${idx}` || item.str !== item.originalStr ? item.color : undefined,
                                   }}
                                   contentEditable={editingTextId === `${selectedPage}-${idx}`}
