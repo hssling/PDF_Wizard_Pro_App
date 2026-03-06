@@ -142,6 +142,10 @@ function App() {
   const [allowPrinting, setAllowPrinting] = useState(true);
   const [autoMatchTextStyle, setAutoMatchTextStyle] = useState(true);
   const [textSizeAdjustPct, setTextSizeAdjustPct] = useState(100);
+  const [findText, setFindText] = useState('');
+  const [replaceText, setReplaceText] = useState('');
+  const [matchCaseReplace, setMatchCaseReplace] = useState(false);
+  const [editReviewIndex, setEditReviewIndex] = useState(0);
 
   // Create PDF State
   const [pdfCreatorImages, setPdfCreatorImages] = useState<{
@@ -675,6 +679,45 @@ function App() {
     return Math.max(ctx.measureText(text || ' ').width, 8);
   };
 
+  const applyTextEditWithReflow = (items: TextItem[], idx: number, newText: string) => {
+    const next = [...items];
+    const current = next[idx];
+    if (!current) return next;
+
+    const oldWidth = current.width || measureTextWidthPx(current.str, current.fontSize, current.fontName);
+    const newWidth = measureTextWidthPx(newText, current.fontSize, current.fontName);
+    const delta = newWidth - oldWidth;
+
+    next[idx] = {
+      ...current,
+      str: newText,
+      width: newWidth,
+      pdfWidth: newWidth / PREVIEW_SCALE
+    };
+
+    if (Math.abs(delta) <= 0.1) return next;
+
+    const lineThreshold = Math.max(current.height * 0.65, 6);
+    const sameLineEntries = next
+      .map((it, itemIdx) => ({ it, itemIdx }))
+      .filter(({ it }) => Math.abs(it.y - current.y) <= lineThreshold)
+      .sort((a, b) => a.it.x - b.it.x);
+    const anchorPos = sameLineEntries.findIndex(entry => entry.itemIdx === idx);
+    if (anchorPos === -1) return next;
+
+    for (let pos = anchorPos + 1; pos < sameLineEntries.length; pos++) {
+      const moveIdx = sameLineEntries[pos].itemIdx;
+      const moved = next[moveIdx];
+      next[moveIdx] = {
+        ...moved,
+        x: moved.x + delta,
+        pdfX: moved.pdfX + (delta / PREVIEW_SCALE)
+      };
+    }
+
+    return next;
+  };
+
   const handleAppendFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileToAppend = e.target.files?.[0];
     if (!fileToAppend || !file) return;
@@ -882,6 +925,90 @@ function App() {
       return updated;
     });
     appendLog(scope === 'page' ? `Reset in-place text edits on Page ${selectedPage}.` : 'Reset all in-place text edits across document.');
+  };
+
+  const editedEntries = React.useMemo(() => {
+    const entries: { page: number; idx: number; value: string }[] = [];
+    Object.keys(pageTextItems).forEach(pageKey => {
+      const page = parseInt(pageKey, 10);
+      const items = pageTextItems[page] || [];
+      items.forEach((item, idx) => {
+        if (item.str !== item.originalStr) {
+          entries.push({ page, idx, value: item.str });
+        }
+      });
+    });
+    return entries.sort((a, b) => a.page - b.page || a.idx - b.idx);
+  }, [pageTextItems]);
+
+  useEffect(() => {
+    if (editedEntries.length === 0) {
+      setEditReviewIndex(0);
+      return;
+    }
+    if (editReviewIndex >= editedEntries.length) {
+      setEditReviewIndex(editedEntries.length - 1);
+    }
+  }, [editedEntries, editReviewIndex]);
+
+  const jumpToEditedEntry = (direction: 'next' | 'prev') => {
+    if (editedEntries.length === 0) return;
+    const offset = direction === 'next' ? 1 : -1;
+    const nextIdx = (editReviewIndex + offset + editedEntries.length) % editedEntries.length;
+    const target = editedEntries[nextIdx];
+    setEditReviewIndex(nextIdx);
+    setSelectedPage(target.page);
+    setEditingTextId(`${target.page}-${target.idx}`);
+  };
+
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const applyFindReplace = (scope: 'page' | 'document') => {
+    const needle = findText.trim();
+    if (!needle) {
+      appendLog('Find/Replace skipped: enter search text first.');
+      return;
+    }
+
+    const regex = new RegExp(escapeRegExp(needle), matchCaseReplace ? 'g' : 'gi');
+    let replacements = 0;
+    let firstChanged: { page: number; idx: number } | null = null;
+
+    setPageTextItems(prev => {
+      const updated: Record<number, TextItem[]> = { ...prev };
+      Object.keys(updated).forEach(pageKey => {
+        const page = parseInt(pageKey, 10);
+        if (scope === 'page' && page !== selectedPage) return;
+        let items = [...updated[page]];
+
+        for (let idx = 0; idx < items.length; idx++) {
+          const current = items[idx];
+          if (!regex.test(current.str)) {
+            regex.lastIndex = 0;
+            continue;
+          }
+          const replaced = current.str.replace(regex, replaceText);
+          regex.lastIndex = 0;
+          if (replaced !== current.str) {
+            items = applyTextEditWithReflow(items, idx, replaced);
+            replacements++;
+            if (!firstChanged) firstChanged = { page, idx };
+          }
+        }
+
+        updated[page] = items;
+      });
+      return updated;
+    });
+
+    const first = firstChanged as { page: number; idx: number } | null;
+    if (first) {
+      setSelectedPage(first.page);
+      setEditingTextId(`${first.page}-${first.idx}`);
+      appendLog(`Find/Replace complete: ${replacements} replacements (${scope}).`);
+    } else {
+      appendLog('Find/Replace complete: no matches found.');
+    }
   };
 
   const runSignatureAudit = async (arrayBuffer: ArrayBuffer) => {
@@ -2427,42 +2554,7 @@ function App() {
                                     setPageTextItems(prev => {
                                       const updated = { ...prev };
                                       if (updated[selectedPage]) {
-                                        const items = [...updated[selectedPage]];
-                                        const current = items[idx];
-                                        if (!current) return updated;
-
-                                        const oldWidth = current.width || measureTextWidthPx(current.str, current.fontSize, current.fontName);
-                                        const newWidth = measureTextWidthPx(newText, current.fontSize, current.fontName);
-                                        const delta = newWidth - oldWidth;
-
-                                        items[idx] = {
-                                          ...current,
-                                          str: newText,
-                                          width: newWidth,
-                                          pdfWidth: newWidth / PREVIEW_SCALE
-                                        };
-
-                                        if (Math.abs(delta) > 0.1) {
-                                          const lineThreshold = Math.max(current.height * 0.65, 6);
-                                          const sameLineEntries = items
-                                            .map((it, itemIdx) => ({ it, itemIdx }))
-                                            .filter(({ it }) => Math.abs(it.y - current.y) <= lineThreshold)
-                                            .sort((a, b) => a.it.x - b.it.x);
-                                          const anchorPos = sameLineEntries.findIndex(entry => entry.itemIdx === idx);
-
-                                          if (anchorPos !== -1) {
-                                            for (let pos = anchorPos + 1; pos < sameLineEntries.length; pos++) {
-                                              const moveIdx = sameLineEntries[pos].itemIdx;
-                                              const moved = items[moveIdx];
-                                              items[moveIdx] = {
-                                                ...moved,
-                                                x: moved.x + delta,
-                                                pdfX: moved.pdfX + (delta / PREVIEW_SCALE)
-                                              };
-                                            }
-                                          }
-                                        }
-                                        updated[selectedPage] = items;
+                                        updated[selectedPage] = applyTextEditWithReflow(updated[selectedPage], idx, newText);
                                       }
                                       return updated;
                                     });
@@ -2680,6 +2772,35 @@ function App() {
                         <div style={{display: 'flex', gap: 8}}>
                           <button className="btn-secondary" style={{padding: '8px'}} onClick={() => resetTextEdits('page')}>Reset Page Edits</button>
                           <button className="btn-secondary" style={{padding: '8px'}} onClick={() => resetTextEdits('document')}>Reset All Edits</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {activeTool === 'content_edit' && (
+                      <div className="property-panel" style={{marginBottom: 16}}>
+                        <div className="property-label" style={{marginBottom: 8, fontWeight: 'bold'}}>Text Review & Replace</div>
+                        <div style={{fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8}}>
+                          Edited blocks: <strong style={{color: 'var(--text-primary)'}}>{editedEntries.length}</strong>
+                        </div>
+                        <div style={{display: 'flex', gap: 8, marginBottom: 12}}>
+                          <button className="btn-secondary" style={{padding: '8px'}} onClick={() => jumpToEditedEntry('prev')} disabled={editedEntries.length === 0}>Prev Edit</button>
+                          <button className="btn-secondary" style={{padding: '8px'}} onClick={() => jumpToEditedEntry('next')} disabled={editedEntries.length === 0}>Next Edit</button>
+                        </div>
+                        <div className="control-group">
+                          <label>Find Text</label>
+                          <input value={findText} onChange={e => setFindText(e.target.value)} placeholder="Type text to find" />
+                        </div>
+                        <div className="control-group">
+                          <label>Replace With</label>
+                          <input value={replaceText} onChange={e => setReplaceText(e.target.value)} placeholder="Replacement text" />
+                        </div>
+                        <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer'}}>
+                          <input type="checkbox" checked={matchCaseReplace} onChange={e => setMatchCaseReplace(e.target.checked)} />
+                          Match Case
+                        </label>
+                        <div style={{display: 'flex', gap: 8}}>
+                          <button className="btn-secondary" style={{padding: '8px'}} onClick={() => applyFindReplace('page')}>Replace On Page</button>
+                          <button className="btn-secondary" style={{padding: '8px'}} onClick={() => applyFindReplace('document')}>Replace In Document</button>
                         </div>
                       </div>
                     )}
