@@ -9,7 +9,7 @@ import {
   MessageSquare, ZoomIn, ZoomOut, Undo2, Redo2,
   Hash, CheckSquare, TextSelect, Ruler
 } from 'lucide-react';
-import { PDFDocument, rgb, degrees, PDFImage } from 'pdf-lib';
+import { PDFDocument, rgb, degrees, PDFImage, StandardFonts, type PDFFont } from 'pdf-lib';
 import * as pdfjsLib from 'pdfjs-dist';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -41,6 +41,9 @@ interface EditOverlay {
 interface TextItem {
   str: string;
   originalStr: string;
+  originalX: number;
+  originalY: number;
+  originalWidth: number;
   x: number;
   y: number;
   width: number;
@@ -49,8 +52,12 @@ interface TextItem {
   fontSize: number;
   pdfX: number;
   pdfY: number;
+  originalPdfX: number;
+  originalPdfY: number;
+  originalPdfWidth: number;
   pdfWidth: number;
   pdfFontSize: number;
+  color: string;
 }
 
 interface SignatureAuditSummary {
@@ -77,6 +84,7 @@ type EditorTool =
   | 'measure_length' | 'form_text' | 'form_check';
 
 function App() {
+  const PREVIEW_SCALE = 1.5;
   const [activeTool, setActiveTool] = useState<ToolType | null>(null);
   const [activeMode, setActiveMode] = useState<'design' | 'secure' | 'analyze'>('design');
   const [file, setFile] = useState<File | null>(null);
@@ -132,6 +140,8 @@ function App() {
   const [measurementScale, setMeasurementScale] = useState(1); // 1 px = 1 unit
   const [layoutPreservation, setLayoutPreservation] = useState(true);
   const [allowPrinting, setAllowPrinting] = useState(true);
+  const [autoMatchTextStyle, setAutoMatchTextStyle] = useState(true);
+  const [textSizeAdjustPct, setTextSizeAdjustPct] = useState(100);
 
   // Create PDF State
   const [pdfCreatorImages, setPdfCreatorImages] = useState<{
@@ -172,6 +182,7 @@ function App() {
   // Zoom
   const [zoomLevel, setZoomLevel] = useState(100);
   const pageWrapperRef = useRef<HTMLDivElement>(null);
+  const textMeasureCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // === VISUAL EDITOR CANVAS PERSISTENCE ===
   useEffect(() => {
@@ -332,7 +343,7 @@ function App() {
       
       for (let i = 1; i <= numToShow; i++) {
         const page = await pdf.getPage(i);
-        const scale = 1.5; // Optimal scale for readability without over-zoom
+        const scale = PREVIEW_SCALE; // Optimal scale for readability without over-zoom
         const cssViewport = page.getViewport({ scale });
         const ratio = 1; // Locked to 1 to ensure CSS coordinates precisely match PDF canvas overlay
         const renderViewport = page.getViewport({ scale: scale * ratio });
@@ -364,13 +375,23 @@ function App() {
           for (const item of textContent.items) {
             if ('str' in item && item.str.trim()) {
               const tx = item.transform;
-              const pdfFontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+              const matrixFontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+              const itemHeight = Math.abs(item.height || 0);
+              const pdfFontSize = Math.max(matrixFontSize, itemHeight, 6);
               const fontSize = pdfFontSize * scale;
               const pdfX = tx[4];
               const pdfY = tx[5];
+              const sampledColor = sampleInkColorHex(
+                context,
+                (pdfX + ((item.width || 0) * 0.5)) * scale,
+                Math.max(0, cssViewport.height - (pdfY * scale) - (fontSize * 0.5))
+              );
               items.push({
                 str: item.str,
                 originalStr: item.str,
+                originalX: pdfX * scale,
+                originalY: cssViewport.height - (pdfY * scale) - fontSize,
+                originalWidth: (item.width || 0) * scale,
                 x: pdfX * scale,
                 y: cssViewport.height - (pdfY * scale) - fontSize,
                 width: (item.width || 0) * scale,
@@ -379,8 +400,12 @@ function App() {
                 fontSize: fontSize,
                 pdfX: pdfX,
                 pdfY: pdfY,
+                originalPdfX: pdfX,
+                originalPdfY: pdfY,
+                originalPdfWidth: (item.width || 0),
                 pdfWidth: (item.width || 0),
-                pdfFontSize: pdfFontSize
+                pdfFontSize: pdfFontSize,
+                color: sampledColor
               });
             }
           }
@@ -564,6 +589,90 @@ function App() {
     } catch {
       return [0];
     }
+  };
+
+  const hexToPdfRgb = (hexColor?: string) => {
+    if (!hexColor) return rgb(0, 0, 0);
+    const normalized = hexColor.trim();
+    const hex = normalized.startsWith('#') ? normalized.slice(1) : normalized;
+    if (hex.length !== 6) return rgb(0, 0, 0);
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    if ([r, g, b].some(v => Number.isNaN(v))) return rgb(0, 0, 0);
+    return rgb(r / 255, g / 255, b / 255);
+  };
+
+  const sampleInkColorHex = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
+    const radius = 2;
+    const maxX = ctx.canvas.width - 1;
+    const maxY = ctx.canvas.height - 1;
+    let bestPixel: { r: number; g: number; b: number } | null = null;
+    let bestLuma = Number.POSITIVE_INFINITY;
+
+    for (let dx = -radius; dx <= radius; dx++) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        const px = Math.max(0, Math.min(maxX, Math.round(x + dx)));
+        const py = Math.max(0, Math.min(maxY, Math.round(y + dy)));
+        const data = ctx.getImageData(px, py, 1, 1).data;
+        const alpha = data[3] / 255;
+        if (alpha < 0.2) continue;
+
+        const [r, g, b] = [data[0], data[1], data[2]];
+        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (luma < bestLuma) {
+          bestLuma = luma;
+          bestPixel = { r, g, b };
+        }
+      }
+    }
+
+    if (!bestPixel) return '#000000';
+    return `#${bestPixel.r.toString(16).padStart(2, '0')}${bestPixel.g.toString(16).padStart(2, '0')}${bestPixel.b.toString(16).padStart(2, '0')}`;
+  };
+
+  const pickPdfStandardFont = (fontName?: string): StandardFonts => {
+    const token = (fontName || '').toLowerCase();
+    const isBold = token.includes('bold');
+    const isItalic = token.includes('italic') || token.includes('oblique');
+
+    if (token.includes('courier')) {
+      if (isBold && isItalic) return StandardFonts.CourierBoldOblique;
+      if (isBold) return StandardFonts.CourierBold;
+      if (isItalic) return StandardFonts.CourierOblique;
+      return StandardFonts.Courier;
+    }
+    if (token.includes('times')) {
+      if (isBold && isItalic) return StandardFonts.TimesRomanBoldItalic;
+      if (isBold) return StandardFonts.TimesRomanBold;
+      if (isItalic) return StandardFonts.TimesRomanItalic;
+      return StandardFonts.TimesRoman;
+    }
+    if (isBold && isItalic) return StandardFonts.HelveticaBoldOblique;
+    if (isBold) return StandardFonts.HelveticaBold;
+    if (isItalic) return StandardFonts.HelveticaOblique;
+    return StandardFonts.Helvetica;
+  };
+
+  const getTextMeasureContext = () => {
+    if (!textMeasureCanvasRef.current) {
+      textMeasureCanvasRef.current = document.createElement('canvas');
+    }
+    return textMeasureCanvasRef.current.getContext('2d');
+  };
+
+  const resolveCanvasFontFamily = (fontName?: string) => {
+    const token = (fontName || '').toLowerCase();
+    if (token.includes('courier')) return 'Courier New, monospace';
+    if (token.includes('times')) return 'Times New Roman, serif';
+    return 'Helvetica, Arial, sans-serif';
+  };
+
+  const measureTextWidthPx = (text: string, fontSize: number, fontName?: string) => {
+    const ctx = getTextMeasureContext();
+    if (!ctx) return Math.max(text.length * (fontSize * 0.55), 8);
+    ctx.font = `${Math.max(8, fontSize)}px ${resolveCanvasFontFamily(fontName)}`;
+    return Math.max(ctx.measureText(text || ' ').width, 8);
   };
 
   const handleAppendFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -753,6 +862,28 @@ function App() {
     appendLog("Sanitizer: Bulk blackouts staged for application.");
   };
 
+  const resetTextEdits = (scope: 'page' | 'document') => {
+    setPageTextItems(prev => {
+      const updated: Record<number, TextItem[]> = { ...prev };
+      Object.keys(updated).forEach(pageKey => {
+        const page = parseInt(pageKey, 10);
+        if (scope === 'page' && page !== selectedPage) return;
+        updated[page] = updated[page].map(item => ({
+          ...item,
+          str: item.originalStr,
+          x: item.originalX,
+          y: item.originalY,
+          width: item.originalWidth,
+          pdfX: item.originalPdfX,
+          pdfY: item.originalPdfY,
+          pdfWidth: item.originalPdfWidth
+        }));
+      });
+      return updated;
+    });
+    appendLog(scope === 'page' ? `Reset in-place text edits on Page ${selectedPage}.` : 'Reset all in-place text edits across document.');
+  };
+
   const runSignatureAudit = async (arrayBuffer: ArrayBuffer) => {
     appendLog("Signature Audit: collecting metadata and cryptographic markers...");
 
@@ -932,6 +1063,14 @@ function App() {
           appendLog("Applying visual overlays and text injections...");
           const pages = srcDoc.getPages();
           const form = srcDoc.getForm(); // Initialize AcroForm builder
+          const embeddedFonts = new Map<StandardFonts, PDFFont>();
+          const getEmbeddedFont = async (fontName?: string) => {
+            const standard = pickPdfStandardFont(fontName);
+            if (!embeddedFonts.has(standard)) {
+              embeddedFonts.set(standard, await srcDoc.embedFont(standard));
+            }
+            return embeddedFonts.get(standard);
+          };
           
           for (const overlay of editOverlays) {
             const page = pages[overlay.page - 1];
@@ -943,7 +1082,7 @@ function App() {
                 x: overlay.x,
                 y: height - overlay.y - (overlay.fontSize || 14),
                 size: overlay.fontSize || 14,
-                color: rgb(0,0,0) // hex to rgb convert later if needed
+                color: hexToPdfRgb(overlay.color)
               });
             } else if (overlay.type === 'rect') {
               page.drawRectangle({
@@ -1000,35 +1139,41 @@ function App() {
           }
 
           // Apply IN-SITU OCR Text Modifications (Overwrite existing layout text)
-          Object.keys(pageTextItems).forEach(pageKey => {
-             const pageNum = parseInt(pageKey);
-             const page = pages[pageNum - 1]; // 0-indexed page in pdf-lib
-             if (!page) return;
+          for (const pageKey of Object.keys(pageTextItems)) {
+            const pageNum = parseInt(pageKey, 10);
+            const page = pages[pageNum - 1]; // 0-indexed page in pdf-lib
+            if (!page) continue;
 
-             const items = pageTextItems[pageNum];
-             let textEditedCount = 0;
-             items.forEach(item => {
-                if (item.str !== item.originalStr) {
-                   // Blank out the original text
-                   page.drawRectangle({
-                      x: item.pdfX - 2,
-                      y: item.pdfY - 2,
-                      width: item.pdfWidth + (item.pdfWidth * 0.1),
-                      height: item.pdfFontSize * 1.2,
-                      color: rgb(1, 1, 1) // Pure White
-                   });
-                   // Burn the new text
-                   page.drawText(item.str, {
-                      x: item.pdfX,
-                      y: item.pdfY,
-                      size: item.pdfFontSize,
-                      color: rgb(0, 0, 0)
-                   });
-                   textEditedCount++;
-                }
-             });
-             if (textEditedCount > 0) appendLog(`Rebuilt ${textEditedCount} modified text blocks on Page ${pageNum}.`);
-          });
+            const items = pageTextItems[pageNum];
+            let textEditedCount = 0;
+            for (const item of items) {
+              const textChanged = item.str !== item.originalStr;
+              const positionChanged = Math.abs(item.pdfX - item.originalPdfX) > 0.001 || Math.abs(item.pdfY - item.originalPdfY) > 0.001;
+              if (!textChanged && !positionChanged) continue;
+
+              const calibratedSize = Math.max(4, item.pdfFontSize * (textSizeAdjustPct / 100));
+
+              // Blank out old glyphs before drawing updated text.
+              page.drawRectangle({
+                x: item.originalPdfX - 2,
+                y: item.originalPdfY - 2,
+                width: Math.max(item.originalPdfWidth + (item.originalPdfWidth * 0.25), calibratedSize * Math.max(item.originalStr.length * 0.4, 1)),
+                height: calibratedSize * 1.35,
+                color: rgb(1, 1, 1)
+              });
+
+              page.drawText(item.str, {
+                x: item.pdfX,
+                y: item.pdfY,
+                size: calibratedSize,
+                color: autoMatchTextStyle ? hexToPdfRgb(item.color) : hexToPdfRgb(currentColor),
+                font: autoMatchTextStyle ? await getEmbeddedFont(item.fontName) : undefined
+              });
+
+              textEditedCount++;
+            }
+            if (textEditedCount > 0) appendLog(`Rebuilt ${textEditedCount} modified text blocks on Page ${pageNum}.`);
+          }
 
           // Apply Freehand Tools (Pencil, Pen, Eraser, Highlighter)
           drawPaths.forEach(path => {
@@ -2257,23 +2402,67 @@ function App() {
                                     left: item.x,
                                     top: item.y,
                                     fontSize: item.fontSize,
+                                    fontFamily: item.fontName || 'sans-serif',
                                     width: item.width || 'auto',
                                     height: item.height,
+                                    color: editingTextId === `${selectedPage}-${idx}` || item.str !== item.originalStr ? item.color : undefined,
                                   }}
                                   contentEditable={editingTextId === `${selectedPage}-${idx}`}
                                   suppressContentEditableWarning
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setEditingTextId(`${selectedPage}-${idx}`);
+                                    setCurrentColor(item.color || '#000000');
+                                    setCurrentFontSize(Math.max(8, Math.round(item.fontSize)));
                                   }}
                                   onBlur={() => setEditingTextId(null)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      (e.target as HTMLElement).blur();
+                                    }
+                                  }}
                                   onInput={(e) => {
                                     const newText = (e.target as HTMLElement).textContent || '';
                                     setPageTextItems(prev => {
                                       const updated = { ...prev };
                                       if (updated[selectedPage]) {
-                                        updated[selectedPage] = [...updated[selectedPage]];
-                                        updated[selectedPage][idx] = { ...updated[selectedPage][idx], str: newText };
+                                        const items = [...updated[selectedPage]];
+                                        const current = items[idx];
+                                        if (!current) return updated;
+
+                                        const oldWidth = current.width || measureTextWidthPx(current.str, current.fontSize, current.fontName);
+                                        const newWidth = measureTextWidthPx(newText, current.fontSize, current.fontName);
+                                        const delta = newWidth - oldWidth;
+
+                                        items[idx] = {
+                                          ...current,
+                                          str: newText,
+                                          width: newWidth,
+                                          pdfWidth: newWidth / PREVIEW_SCALE
+                                        };
+
+                                        if (Math.abs(delta) > 0.1) {
+                                          const lineThreshold = Math.max(current.height * 0.65, 6);
+                                          const sameLineEntries = items
+                                            .map((it, itemIdx) => ({ it, itemIdx }))
+                                            .filter(({ it }) => Math.abs(it.y - current.y) <= lineThreshold)
+                                            .sort((a, b) => a.it.x - b.it.x);
+                                          const anchorPos = sameLineEntries.findIndex(entry => entry.itemIdx === idx);
+
+                                          if (anchorPos !== -1) {
+                                            for (let pos = anchorPos + 1; pos < sameLineEntries.length; pos++) {
+                                              const moveIdx = sameLineEntries[pos].itemIdx;
+                                              const moved = items[moveIdx];
+                                              items[moveIdx] = {
+                                                ...moved,
+                                                x: moved.x + delta,
+                                                pdfX: moved.pdfX + (delta / PREVIEW_SCALE)
+                                              };
+                                            }
+                                          }
+                                        }
+                                        updated[selectedPage] = items;
                                       }
                                       return updated;
                                     });
@@ -2473,6 +2662,24 @@ function App() {
                             <option value="Courier">Courier</option>
                             <option value="Times">Times New Roman</option>
                           </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {activeTool === 'content_edit' && (
+                      <div className="property-panel" style={{marginBottom: 16}}>
+                        <div className="property-label" style={{marginBottom: 8, fontWeight: 'bold'}}>Text Fidelity (OCR Edit)</div>
+                        <label style={{display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer'}}>
+                          <input type="checkbox" checked={autoMatchTextStyle} onChange={e => setAutoMatchTextStyle(e.target.checked)} />
+                          Auto-match detected font and color
+                        </label>
+                        <div className="control-group">
+                          <label>Font Size Calibration ({textSizeAdjustPct}%)</label>
+                          <input type="range" min="80" max="140" step="1" value={textSizeAdjustPct} onChange={e => setTextSizeAdjustPct(Number(e.target.value))} />
+                        </div>
+                        <div style={{display: 'flex', gap: 8}}>
+                          <button className="btn-secondary" style={{padding: '8px'}} onClick={() => resetTextEdits('page')}>Reset Page Edits</button>
+                          <button className="btn-secondary" style={{padding: '8px'}} onClick={() => resetTextEdits('document')}>Reset All Edits</button>
                         </div>
                       </div>
                     )}
