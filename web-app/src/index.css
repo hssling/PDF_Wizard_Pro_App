@@ -1297,3 +1297,43 @@ button {
 .animate-in {
   animation: animate-in 0.3s ease-out forwards;
 }
+
+.mobile-text-editor {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 4100;
+  padding: 16px;
+}
+
+.mobile-text-editor-panel {
+  width: 100%;
+  max-width: 640px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 -8px 28px rgba(0,0,0,0.35);
+}
+
+.mobile-text-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.mobile-text-editor-input {
+  width: 100%;
+  min-height: 96px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: #fff;
+  color: #0f172a;
+  padding: 10px;
+  font-size: 16px;
+  line-height: 1.45;
+}

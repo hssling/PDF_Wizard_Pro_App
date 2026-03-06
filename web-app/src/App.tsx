@@ -142,6 +142,10 @@ function App() {
   const [allowPrinting, setAllowPrinting] = useState(true);
   const [autoMatchTextStyle, setAutoMatchTextStyle] = useState(true);
   const [textSizeAdjustPct, setTextSizeAdjustPct] = useState(100);
+  const [textBaselineAdjustPt, setTextBaselineAdjustPt] = useState(0);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => (typeof window !== 'undefined' ? window.innerWidth <= 768 : false));
+  const [mobileTextEditor, setMobileTextEditor] = useState<{ page: number; idx: number } | null>(null);
+  const [mobileTextDraft, setMobileTextDraft] = useState('');
   const [findText, setFindText] = useState('');
   const [replaceText, setReplaceText] = useState('');
   const [matchCaseReplace, setMatchCaseReplace] = useState(false);
@@ -274,6 +278,13 @@ function App() {
   useEffect(() => {
     localStorage.setItem('wizard_ai_config', JSON.stringify(aiConfig));
   }, [aiConfig]);
+
+  useEffect(() => {
+    const onResize = () => setIsMobileViewport(window.innerWidth <= 768);
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   useEffect(() => {
     const updateScale = () => {
@@ -427,7 +438,9 @@ function App() {
               const sampledColor = sampleInkColorHex(
                 context,
                 (pdfX + ((item.width || 0) * 0.5)) * scale,
-                Math.max(0, cssViewport.height - (pdfY * scale) - (fontSize * 0.5))
+                Math.max(0, cssViewport.height - (pdfY * scale) - (fontSize * 0.5)),
+                Math.max((item.width || 0) * scale, 14),
+                Math.max(fontSize * 0.9, 10)
               );
 
               const tokens = item.str.match(/\S+\s*/g) || [item.str];
@@ -659,32 +672,34 @@ function App() {
     return rgb(r / 255, g / 255, b / 255);
   };
 
-  const sampleInkColorHex = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
-    const radius = 2;
+  const sampleInkColorHex = (ctx: CanvasRenderingContext2D, x: number, y: number, width = 24, height = 16) => {
     const maxX = ctx.canvas.width - 1;
     const maxY = ctx.canvas.height - 1;
-    let bestPixel: { r: number; g: number; b: number } | null = null;
-    let bestLuma = Number.POSITIVE_INFINITY;
+    const stepX = Math.max(1, Math.round(width / 3));
+    const stepY = Math.max(1, Math.round(height / 3));
+    const samples: { r: number; g: number; b: number }[] = [];
 
-    for (let dx = -radius; dx <= radius; dx++) {
-      for (let dy = -radius; dy <= radius; dy++) {
-        const px = Math.max(0, Math.min(maxX, Math.round(x + dx)));
-        const py = Math.max(0, Math.min(maxY, Math.round(y + dy)));
+    for (let sx = -1; sx <= 1; sx++) {
+      for (let sy = -1; sy <= 1; sy++) {
+        const px = Math.max(0, Math.min(maxX, Math.round(x + sx * stepX)));
+        const py = Math.max(0, Math.min(maxY, Math.round(y + sy * stepY)));
         const data = ctx.getImageData(px, py, 1, 1).data;
         const alpha = data[3] / 255;
         if (alpha < 0.2) continue;
 
         const [r, g, b] = [data[0], data[1], data[2]];
         const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-        if (luma < bestLuma) {
-          bestLuma = luma;
-          bestPixel = { r, g, b };
-        }
+        if (luma >= 248) continue; // likely background white
+        samples.push({ r, g, b });
       }
     }
 
-    if (!bestPixel) return '#000000';
-    return `#${bestPixel.r.toString(16).padStart(2, '0')}${bestPixel.g.toString(16).padStart(2, '0')}${bestPixel.b.toString(16).padStart(2, '0')}`;
+    if (samples.length === 0) return '#111111';
+    const avg = samples.reduce((acc, s) => ({ r: acc.r + s.r, g: acc.g + s.g, b: acc.b + s.b }), { r: 0, g: 0, b: 0 });
+    const r = Math.round(avg.r / samples.length);
+    const g = Math.round(avg.g / samples.length);
+    const b = Math.round(avg.b / samples.length);
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
   };
 
   const pickPdfStandardFont = (fontName?: string): StandardFonts => {
@@ -698,11 +713,17 @@ function App() {
       if (isItalic) return StandardFonts.CourierOblique;
       return StandardFonts.Courier;
     }
-    if (token.includes('times')) {
+    if (token.includes('times') || token.includes('cambria') || token.includes('georgia') || token.includes('garamond')) {
       if (isBold && isItalic) return StandardFonts.TimesRomanBoldItalic;
       if (isBold) return StandardFonts.TimesRomanBold;
       if (isItalic) return StandardFonts.TimesRomanItalic;
       return StandardFonts.TimesRoman;
+    }
+    if (token.includes('arial') || token.includes('helvetica') || token.includes('calibri') || token.includes('sans')) {
+      if (isBold && isItalic) return StandardFonts.HelveticaBoldOblique;
+      if (isBold) return StandardFonts.HelveticaBold;
+      if (isItalic) return StandardFonts.HelveticaOblique;
+      return StandardFonts.Helvetica;
     }
     if (isBold && isItalic) return StandardFonts.HelveticaBoldOblique;
     if (isBold) return StandardFonts.HelveticaBold;
@@ -720,7 +741,8 @@ function App() {
   const resolveCanvasFontFamily = (fontName?: string) => {
     const token = (fontName || '').toLowerCase();
     if (token.includes('courier')) return 'Courier New, monospace';
-    if (token.includes('times')) return 'Times New Roman, serif';
+    if (token.includes('times') || token.includes('cambria') || token.includes('georgia') || token.includes('garamond')) return 'Times New Roman, serif';
+    if (token.includes('calibri') || token.includes('arial') || token.includes('helvetica') || token.includes('sans')) return 'Arial, Helvetica, sans-serif';
     return 'Helvetica, Arial, sans-serif';
   };
 
@@ -1079,6 +1101,21 @@ function App() {
     });
   };
 
+  const openTextEditSession = (page: number, idx: number, seedText: string) => {
+    if (isMobileViewport) {
+      setMobileTextEditor({ page, idx });
+      setMobileTextDraft(seedText);
+      return;
+    }
+    beginInlineTextEdit(page, idx, seedText);
+  };
+
+  const commitMobileTextEdit = () => {
+    if (!mobileTextEditor) return;
+    commitInlineTextEdit(mobileTextEditor.page, mobileTextEditor.idx, mobileTextDraft);
+    setMobileTextEditor(null);
+  };
+
   const runSignatureAudit = async (arrayBuffer: ArrayBuffer) => {
     appendLog("Signature Audit: collecting metadata and cryptographic markers...");
 
@@ -1359,7 +1396,7 @@ function App() {
 
               page.drawText(item.str, {
                 x: item.pdfX,
-                y: item.pdfY,
+                y: item.pdfY + textBaselineAdjustPt,
                 size: calibratedSize,
                 color: autoMatchTextStyle ? hexToPdfRgb(item.color) : hexToPdfRgb(currentColor),
                 font: autoMatchTextStyle ? await getEmbeddedFont(item.fontName) : undefined
@@ -2618,11 +2655,11 @@ function App() {
                                     height: item.height * pageDisplayScale,
                                     color: isEditing || item.str !== item.originalStr ? item.color : undefined,
                                   }}
-                                  contentEditable={isEditing}
+                                  contentEditable={isEditing && !isMobileViewport}
                                   suppressContentEditableWarning
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    beginInlineTextEdit(selectedPage, idx, item.str);
+                                    openTextEditSession(selectedPage, idx, item.str);
                                     setCurrentColor(item.color || '#000000');
                                     setCurrentFontSize(Math.max(8, Math.round(item.fontSize)));
                                   }}
@@ -2644,6 +2681,7 @@ function App() {
                                     }
                                   }}
                                   onInput={(e) => {
+                                    if (isMobileViewport) return;
                                     liveTextEditRef.current[itemId] = (e.currentTarget.textContent || '');
                                   }}
                                 >
@@ -2874,6 +2912,10 @@ function App() {
                         <div className="control-group">
                           <label>Font Size Calibration ({textSizeAdjustPct}%)</label>
                           <input type="range" min="80" max="140" step="1" value={textSizeAdjustPct} onChange={e => setTextSizeAdjustPct(Number(e.target.value))} />
+                        </div>
+                        <div className="control-group">
+                          <label>Baseline Offset ({textBaselineAdjustPt.toFixed(1)} pt)</label>
+                          <input type="range" min="-4" max="4" step="0.1" value={textBaselineAdjustPt} onChange={e => setTextBaselineAdjustPt(Number(e.target.value))} />
                         </div>
                         <div style={{display: 'flex', gap: 8}}>
                           <button className="btn-secondary" style={{padding: '8px'}} onClick={() => resetTextEdits('page')}>Reset Page Edits</button>
@@ -3178,6 +3220,44 @@ function App() {
           )}
         </section>
       </main>
+
+      {mobileTextEditor && (() => {
+        const editItem = pageTextItems[mobileTextEditor.page]?.[mobileTextEditor.idx];
+        if (!editItem) return null;
+        return (
+          <div className="mobile-text-editor" onClick={() => setMobileTextEditor(null)}>
+            <div className="mobile-text-editor-panel" onClick={e => e.stopPropagation()}>
+              <div className="mobile-text-editor-header">
+                <strong>Inline Text Edit</strong>
+                <button className="btn-secondary" style={{width: 'auto', padding: '6px 12px'}} onClick={() => setMobileTextEditor(null)}>Cancel</button>
+              </div>
+              <p style={{fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8}}>
+                Page {mobileTextEditor.page} • Style preview shown below
+              </p>
+              <div style={{
+                padding: '10px 12px',
+                borderRadius: 8,
+                border: '1px solid var(--border-color)',
+                background: 'rgba(255,255,255,0.03)',
+                marginBottom: 10,
+                fontFamily: resolveCanvasFontFamily(editItem.fontName),
+                color: editItem.color,
+                fontSize: Math.max(14, Math.min(26, editItem.fontSize * 0.9))
+              }}>
+                {mobileTextDraft || ' '}
+              </div>
+              <textarea
+                className="mobile-text-editor-input"
+                value={mobileTextDraft}
+                onChange={e => setMobileTextDraft(e.target.value)}
+                autoFocus
+                rows={4}
+              />
+              <button className="btn-primary" style={{marginTop: 12}} onClick={commitMobileTextEdit}>Apply Text Change</button>
+            </div>
+          </div>
+        );
+      })()}
 
       <SignaturePadModal 
         show={showSignaturePad}
