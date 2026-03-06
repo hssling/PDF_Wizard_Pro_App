@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Merge, Type, Zap,
   Search, Bell, User, Upload,
@@ -202,6 +202,7 @@ function App() {
   const pageWrapperRef = useRef<HTMLDivElement>(null);
   const pageImageRef = useRef<HTMLImageElement>(null);
   const textMeasureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fontUploadInputRef = useRef<HTMLInputElement>(null);
   const [pageDisplayScale, setPageDisplayScale] = useState(1);
 
   // === VISUAL EDITOR CANVAS PERSISTENCE ===
@@ -773,11 +774,11 @@ function App() {
     return parts[0] || cleaned;
   };
 
-  const findUploadedFont = (familyOrName?: string) => {
+  const findUploadedFont = useCallback((familyOrName?: string) => {
     const key = normalizeFontKey(familyOrName);
     if (!key) return null;
     return uploadedFonts.find(f => key.includes(normalizeFontKey(f.family)) || normalizeFontKey(f.family).includes(key)) || null;
-  };
+  }, [uploadedFonts]);
 
   const handleFontUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -806,6 +807,10 @@ function App() {
     });
     appendLog(`Loaded ${nextFonts.length} custom font(s) for style-matched export.`);
     e.target.value = '';
+  };
+
+  const triggerFontUpload = () => {
+    fontUploadInputRef.current?.click();
   };
 
   const measureTextWidthPx = (text: string, fontSize: number, fontName?: string) => {
@@ -1086,6 +1091,43 @@ function App() {
     });
     return Array.from(fonts);
   }, [pageTextItems]);
+
+  const isStandardFontFamily = useCallback((family: string) => {
+    const token = normalizeFontKey(family);
+    return (
+      token.includes('helvetica') ||
+      token.includes('arial') ||
+      token.includes('calibri') ||
+      token.includes('sans') ||
+      token.includes('courier') ||
+      token.includes('times') ||
+      token.includes('cambria') ||
+      token.includes('georgia') ||
+      token.includes('garamond')
+    );
+  }, []);
+
+  const missingFontSuggestions = React.useMemo(() => {
+    const byFamily = new Map<string, { family: string; pages: Set<number>; count: number }>();
+    Object.entries(pageTextItems).forEach(([pageKey, items]) => {
+      const page = parseInt(pageKey, 10);
+      items.forEach(item => {
+        const family = item.detectedFontFamily || item.fontName;
+        if (!family) return;
+        if (isStandardFontFamily(family)) return;
+        if (findUploadedFont(family)) return;
+        const key = normalizeFontKey(family);
+        if (!key) return;
+        const entry = byFamily.get(key) || { family, pages: new Set<number>(), count: 0 };
+        entry.pages.add(page);
+        entry.count += 1;
+        byFamily.set(key, entry);
+      });
+    });
+    return Array.from(byFamily.values())
+      .map(entry => ({ family: entry.family, pages: Array.from(entry.pages).sort((a, b) => a - b), count: entry.count }))
+      .sort((a, b) => b.count - a.count);
+  }, [pageTextItems, findUploadedFont, isStandardFontFamily]);
 
   useEffect(() => {
     if (editedEntries.length === 0) {
@@ -3035,7 +3077,7 @@ function App() {
                         </div>
                         <div className="control-group">
                           <label>Upload Fonts (.ttf / .otf)</label>
-                          <input type="file" accept=".ttf,.otf,.ttc,.woff,.woff2" multiple onChange={handleFontUpload} />
+                          <input ref={fontUploadInputRef} type="file" accept=".ttf,.otf,.ttc,.woff,.woff2" multiple onChange={handleFontUpload} />
                           {uploadedFonts.length > 0 && (
                             <div style={{fontSize: 11, color: 'var(--text-secondary)', marginTop: 6}}>
                               Loaded: {uploadedFonts.map(f => f.family).join(', ')}
@@ -3055,6 +3097,21 @@ function App() {
                         <p style={{fontSize: 11, color: 'var(--text-secondary)', margin: '4px 0 0 0'}}>
                           Detected fonts: {detectedFonts.length > 0 ? detectedFonts.slice(0, 8).join(', ') : 'None detected yet'}
                         </p>
+                        {missingFontSuggestions.length > 0 && (
+                          <div style={{marginTop: 10, padding: 10, borderRadius: 8, background: 'rgba(15, 23, 42, 0.06)', border: '1px solid rgba(15, 23, 42, 0.08)'}}>
+                            <div style={{fontSize: 11, fontWeight: 700, marginBottom: 6}}>Suggested font uploads for exact matching</div>
+                            <div style={{display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: 'var(--text-secondary)'}}>
+                              {missingFontSuggestions.slice(0, 5).map(entry => (
+                                <div key={entry.family}>
+                                  {entry.family} • pages {entry.pages.join(', ')} • {entry.count} text block{entry.count > 1 ? 's' : ''}
+                                </div>
+                              ))}
+                            </div>
+                            <button className="btn-secondary" style={{padding: '6px 8px', marginTop: 8}} onClick={triggerFontUpload}>
+                              Upload Suggested Fonts
+                            </button>
+                          </div>
+                        )}
                         <div className="control-group">
                           <label>Font Size Calibration ({textSizeAdjustPct}%)</label>
                           <input type="range" min="80" max="140" step="1" value={textSizeAdjustPct} onChange={e => setTextSizeAdjustPct(Number(e.target.value))} />
