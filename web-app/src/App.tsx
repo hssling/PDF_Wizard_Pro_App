@@ -176,6 +176,7 @@ function App() {
   // OCR Text Layer
   const [pageTextItems, setPageTextItems] = useState<Record<number, TextItem[]>>({});
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const liveTextEditRef = useRef<Record<string, string>>({});
 
   // Drawing Layer
   const drawCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -1043,6 +1044,22 @@ function App() {
     } else {
       appendLog('Find/Replace complete: no matches found.');
     }
+  };
+
+  const beginInlineTextEdit = (page: number, idx: number, seedText: string) => {
+    const key = `${page}-${idx}`;
+    liveTextEditRef.current[key] = seedText;
+    setEditingTextId(key);
+  };
+
+  const commitInlineTextEdit = (page: number, idx: number, nextText: string) => {
+    setPageTextItems(prev => {
+      const updated = { ...prev };
+      if (updated[page]) {
+        updated[page] = applyTextEditWithReflow(updated[page], idx, nextText);
+      }
+      return updated;
+    });
   };
 
   const runSignatureAudit = async (arrayBuffer: ArrayBuffer) => {
@@ -2568,9 +2585,13 @@ function App() {
                           {activeEditorTool === 'cursor' && pageTextItems[selectedPage] && (
                             <div className="text-layer">
                               {pageTextItems[selectedPage].map((item, idx) => (
+                                (() => {
+                                  const itemId = `${selectedPage}-${idx}`;
+                                  const isEditing = editingTextId === itemId;
+                                  return (
                                 <span
                                   key={idx}
-                                  className={`${editingTextId === `${selectedPage}-${idx}` ? 'editing' : ''} ${item.str !== item.originalStr ? 'edited' : ''}`}
+                                  className={`${isEditing ? 'editing' : ''} ${item.str !== item.originalStr ? 'edited' : ''}`}
                                   style={{
                                     left: item.x * pageDisplayScale,
                                     top: item.y * pageDisplayScale,
@@ -2578,17 +2599,22 @@ function App() {
                                     fontFamily: item.fontName || 'sans-serif',
                                     width: (item.width || 0) * pageDisplayScale || 'auto',
                                     height: item.height * pageDisplayScale,
-                                    color: editingTextId === `${selectedPage}-${idx}` || item.str !== item.originalStr ? item.color : undefined,
+                                    color: isEditing || item.str !== item.originalStr ? item.color : undefined,
                                   }}
-                                  contentEditable={editingTextId === `${selectedPage}-${idx}`}
+                                  contentEditable={isEditing}
                                   suppressContentEditableWarning
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setEditingTextId(`${selectedPage}-${idx}`);
+                                    beginInlineTextEdit(selectedPage, idx, item.str);
                                     setCurrentColor(item.color || '#000000');
                                     setCurrentFontSize(Math.max(8, Math.round(item.fontSize)));
                                   }}
-                                  onBlur={() => setEditingTextId(null)}
+                                  onBlur={(e) => {
+                                    const finalText = (e.currentTarget.textContent || '').trimEnd();
+                                    commitInlineTextEdit(selectedPage, idx, finalText);
+                                    delete liveTextEditRef.current[itemId];
+                                    setEditingTextId(null);
+                                  }}
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
                                       e.preventDefault();
@@ -2596,18 +2622,13 @@ function App() {
                                     }
                                   }}
                                   onInput={(e) => {
-                                    const newText = (e.target as HTMLElement).textContent || '';
-                                    setPageTextItems(prev => {
-                                      const updated = { ...prev };
-                                      if (updated[selectedPage]) {
-                                        updated[selectedPage] = applyTextEditWithReflow(updated[selectedPage], idx, newText);
-                                      }
-                                      return updated;
-                                    });
+                                    liveTextEditRef.current[itemId] = (e.currentTarget.textContent || '');
                                   }}
                                 >
-                                  {item.str}
+                                  {isEditing ? (liveTextEditRef.current[itemId] ?? item.str) : item.str}
                                 </span>
+                                  );
+                                })()
                               ))}
                             </div>
                           )}
