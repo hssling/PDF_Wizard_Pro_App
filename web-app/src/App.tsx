@@ -238,6 +238,23 @@ function App() {
     }
   }, [drawPaths, currentDrawPath, selectedPage, activeEditorTool, currentColor, zoomLevel]);
 
+  const getStrokeWidthForTool = (tool: EditorTool | string) => {
+    if (tool === 'pencil') return 1;
+    if (tool === 'highlighter') return 16;
+    return 2;
+  };
+
+  const getStrokeColorForTool = (tool: EditorTool | string, color: string) => {
+    if (tool === 'eraser') return '#FFFFFF';
+    if (tool === 'highlighter') return 'rgba(255,255,0,0.4)';
+    return color;
+  };
+
+  const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
   // Undo/Redo
   const [undoStack, setUndoStack] = useState<EditOverlay[][]>([]);
   const [redoStack, setRedoStack] = useState<EditOverlay[][]>([]);
@@ -2615,6 +2632,11 @@ function App() {
                                     delete liveTextEditRef.current[itemId];
                                     setEditingTextId(null);
                                   }}
+                                  onFocus={(e) => {
+                                    if (window.innerWidth <= 768) {
+                                      setTimeout(() => e.currentTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }), 80);
+                                    }
+                                  }}
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
                                       e.preventDefault();
@@ -2638,28 +2660,26 @@ function App() {
                             <canvas 
                               ref={drawCanvasRef}
                               className="draw-canvas"
-                              onMouseDown={(e) => {
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const x = e.clientX - rect.left;
-                                const y = e.clientY - rect.top;
+                              onPointerDown={(e) => {
+                                if (e.pointerType === 'touch') e.preventDefault();
+                                e.currentTarget.setPointerCapture(e.pointerId);
+                                const { x, y } = getCanvasPoint(e);
                                 setCurrentDrawPath([{ x, y }]);
                                 setIsDrawing(true);
                                 const ctx = e.currentTarget.getContext('2d');
                                 if (ctx) {
                                   ctx.beginPath();
                                   ctx.moveTo(x, y);
-                                  ctx.strokeStyle = activeEditorTool === 'eraser' ? '#FFFFFF' : 
-                                                    activeEditorTool === 'highlighter' ? 'rgba(255,255,0,0.4)' : currentColor;
-                                  ctx.lineWidth = activeEditorTool === 'pencil' ? 1 : activeEditorTool === 'highlighter' ? 16 : 2;
+                                  ctx.strokeStyle = getStrokeColorForTool(activeEditorTool, currentColor);
+                                  ctx.lineWidth = getStrokeWidthForTool(activeEditorTool);
                                   ctx.lineCap = 'round';
                                   ctx.lineJoin = 'round';
                                 }
                               }}
-                              onMouseMove={(e) => {
+                              onPointerMove={(e) => {
                                 if (!isDrawing) return;
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const x = e.clientX - rect.left;
-                                const y = e.clientY - rect.top;
+                                if (e.pointerType === 'touch') e.preventDefault();
+                                const { x, y } = getCanvasPoint(e);
                                 setCurrentDrawPath(prev => [...prev, { x, y }]);
                                 const ctx = e.currentTarget.getContext('2d');
                                 if (ctx) {
@@ -2667,15 +2687,34 @@ function App() {
                                   ctx.stroke();
                                 }
                               }}
-                              onMouseUp={() => {
+                              onPointerUp={(e) => {
+                                if (e.pointerType === 'touch') e.preventDefault();
                                 setIsDrawing(false);
                                 if (currentDrawPath.length > 0) {
                                   setDrawPaths(prev => [...prev, { 
                                     page: selectedPage, 
                                     points: currentDrawPath, 
                                     color: currentColor, 
-                                    width: 2, 
+                                    width: getStrokeWidthForTool(activeEditorTool), 
                                     tool: activeEditorTool 
+                                  }]);
+                                }
+                                setCurrentDrawPath([]);
+                              }}
+                              onPointerCancel={() => {
+                                setIsDrawing(false);
+                                setCurrentDrawPath([]);
+                              }}
+                              onPointerLeave={() => {
+                                if (!isDrawing) return;
+                                setIsDrawing(false);
+                                if (currentDrawPath.length > 0) {
+                                  setDrawPaths(prev => [...prev, {
+                                    page: selectedPage,
+                                    points: currentDrawPath,
+                                    color: currentColor,
+                                    width: getStrokeWidthForTool(activeEditorTool),
+                                    tool: activeEditorTool
                                   }]);
                                 }
                                 setCurrentDrawPath([]);
