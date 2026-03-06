@@ -49,6 +49,7 @@ interface TextItem {
   width: number;
   height: number;
   fontName: string;
+  detectedFontFamily: string;
   fontSize: number;
   pdfX: number;
   pdfY: number;
@@ -58,6 +59,13 @@ interface TextItem {
   pdfWidth: number;
   pdfFontSize: number;
   color: string;
+}
+
+interface UploadedFont {
+  id: string;
+  family: string;
+  sourceName: string;
+  bytes: Uint8Array;
 }
 
 interface SignatureAuditSummary {
@@ -115,6 +123,7 @@ function App() {
   const [currentFontSize, setCurrentFontSize] = useState(14);
   const [currentColor, setCurrentColor] = useState('#000000');
   const [currentFontFamily, setCurrentFontFamily] = useState('Helvetica');
+  const [uploadedFonts, setUploadedFonts] = useState<UploadedFont[]>([]);
   const [pageOrder, setPageOrder] = useState<number[]>([]); // Tracks indices of current pages
   const [documentDarkMode, setDocumentDarkMode] = useState(false);
   const [scannedPII, setScannedPII] = useState<{type: string, text: string, page: number}[]>([]);
@@ -425,6 +434,7 @@ function App() {
         // === OCR TEXT EXTRACTION ===
         try {
           const textContent = await page.getTextContent();
+          const styleMap = textContent.styles as Record<string, { fontFamily?: string }>;
           const items: TextItem[] = [];
           for (const item of textContent.items) {
             if ('str' in item && item.str.trim()) {
@@ -443,6 +453,7 @@ function App() {
                 Math.max(fontSize * 0.9, 10)
               );
 
+              const detectedFontFamily = extractFontFamilyFromPdfName(styleMap[item.fontName || '']?.fontFamily || item.fontName || '');
               const tokens = item.str.match(/\S+\s*/g) || [item.str];
               const totalTokenChars = Math.max(tokens.reduce((sum, token) => sum + token.length, 0), 1);
               let runningPdfX = pdfX;
@@ -463,6 +474,7 @@ function App() {
                   width: tokenPdfWidth * scale,
                   height: fontSize * 1.2,
                   fontName: item.fontName || 'sans-serif',
+                  detectedFontFamily,
                   fontSize: fontSize,
                   pdfX: runningPdfX,
                   pdfY: pdfY,
@@ -746,6 +758,56 @@ function App() {
     return 'Helvetica, Arial, sans-serif';
   };
 
+  const normalizeFontKey = (value?: string) =>
+    (value || '')
+      .toLowerCase()
+      .replace(/^[a-z]{6}\+/i, '') // strip subset prefixes like ABCDEF+
+      .replace(/[-_]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const extractFontFamilyFromPdfName = (raw?: string) => {
+    const cleaned = (raw || '').replace(/^[A-Z]{6}\+/, '').trim();
+    if (!cleaned) return 'Helvetica';
+    const parts = cleaned.split(/[-,]/).filter(Boolean);
+    return parts[0] || cleaned;
+  };
+
+  const findUploadedFont = (familyOrName?: string) => {
+    const key = normalizeFontKey(familyOrName);
+    if (!key) return null;
+    return uploadedFonts.find(f => key.includes(normalizeFontKey(f.family)) || normalizeFontKey(f.family).includes(key)) || null;
+  };
+
+  const handleFontUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const nextFonts: UploadedFont[] = [];
+    for (const file of Array.from(files)) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const family = extractFontFamilyFromPdfName(file.name.replace(/\.(ttf|otf|woff2?|ttc)$/i, ''));
+      nextFonts.push({
+        id: `${family}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        family,
+        sourceName: file.name,
+        bytes
+      });
+    }
+
+    setUploadedFonts(prev => {
+      const merged = [...prev];
+      nextFonts.forEach(font => {
+        const exists = merged.findIndex(f => normalizeFontKey(f.family) === normalizeFontKey(font.family));
+        if (exists >= 0) merged[exists] = font;
+        else merged.push(font);
+      });
+      return merged;
+    });
+    appendLog(`Loaded ${nextFonts.length} custom font(s) for style-matched export.`);
+    e.target.value = '';
+  };
+
   const measureTextWidthPx = (text: string, fontSize: number, fontName?: string) => {
     const ctx = getTextMeasureContext();
     if (!ctx) return Math.max(text.length * (fontSize * 0.55), 8);
@@ -758,8 +820,8 @@ function App() {
     const current = next[idx];
     if (!current) return next;
 
-    const oldWidth = current.width || measureTextWidthPx(current.str, current.fontSize, current.fontName);
-    const newWidth = measureTextWidthPx(newText, current.fontSize, current.fontName);
+    const oldWidth = current.width || measureTextWidthPx(current.str, current.fontSize, current.detectedFontFamily || current.fontName);
+    const newWidth = measureTextWidthPx(newText, current.fontSize, current.detectedFontFamily || current.fontName);
     const delta = newWidth - oldWidth;
 
     next[idx] = {
@@ -1013,6 +1075,16 @@ function App() {
       });
     });
     return entries.sort((a, b) => a.page - b.page || a.idx - b.idx);
+  }, [pageTextItems]);
+
+  const detectedFonts = React.useMemo(() => {
+    const fonts = new Set<string>();
+    Object.values(pageTextItems).forEach(items => {
+      items.forEach(item => {
+        if (item.detectedFontFamily) fonts.add(item.detectedFontFamily);
+      });
+    });
+    return Array.from(fonts);
   }, [pageTextItems]);
 
   useEffect(() => {
@@ -1295,13 +1367,29 @@ function App() {
           appendLog("Applying visual overlays and text injections...");
           const pages = srcDoc.getPages();
           const form = srcDoc.getForm(); // Initialize AcroForm builder
-          const embeddedFonts = new Map<StandardFonts, PDFFont>();
-          const getEmbeddedFont = async (fontName?: string) => {
-            const standard = pickPdfStandardFont(fontName);
-            if (!embeddedFonts.has(standard)) {
-              embeddedFonts.set(standard, await srcDoc.embedFont(standard));
+          const embeddedFonts = new Map<string, PDFFont>();
+          try {
+            const { default: loadedFontkit } = await import('@pdf-lib/fontkit');
+            srcDoc.registerFontkit(loadedFontkit);
+          } catch {
+            appendLog('FontKit registration warning: falling back to standard fonts.');
+          }
+          const getEmbeddedFont = async (fontName?: string, detectedFamily?: string) => {
+            const customFont = findUploadedFont(detectedFamily || fontName);
+            if (customFont) {
+              const customKey = `custom:${normalizeFontKey(customFont.family)}`;
+              if (!embeddedFonts.has(customKey)) {
+                embeddedFonts.set(customKey, await srcDoc.embedFont(customFont.bytes, { subset: true }));
+              }
+              return embeddedFonts.get(customKey);
             }
-            return embeddedFonts.get(standard);
+
+            const standard = pickPdfStandardFont(detectedFamily || fontName);
+            const standardKey = `standard:${standard}`;
+            if (!embeddedFonts.has(standardKey)) {
+              embeddedFonts.set(standardKey, await srcDoc.embedFont(standard));
+            }
+            return embeddedFonts.get(standardKey);
           };
           
           for (const overlay of editOverlays) {
@@ -1310,11 +1398,13 @@ function App() {
             const { height } = page.getSize();
             
             if (overlay.type === 'text') {
+              const overlayFont = await getEmbeddedFont(overlay.fontFamily, overlay.fontFamily);
               page.drawText(overlay.text || '', {
                 x: overlay.x,
                 y: height - overlay.y - (overlay.fontSize || 14),
                 size: overlay.fontSize || 14,
-                color: hexToPdfRgb(overlay.color)
+                color: hexToPdfRgb(overlay.color),
+                font: overlayFont
               });
             } else if (overlay.type === 'rect') {
               page.drawRectangle({
@@ -1393,7 +1483,7 @@ function App() {
               if (!textChanged && !positionChanged) continue;
 
               const calibratedSize = Math.max(4, item.pdfFontSize * (textSizeAdjustPct / 100));
-              const drawFont = autoMatchTextStyle ? await getEmbeddedFont(item.fontName) : undefined;
+              const drawFont = autoMatchTextStyle ? await getEmbeddedFont(item.fontName, item.detectedFontFamily) : undefined;
               const measuredNewWidth = drawFont
                 ? drawFont.widthOfTextAtSize(item.str || ' ', calibratedSize)
                 : Math.max((item.str || ' ').length * calibratedSize * 0.52, calibratedSize * 0.5);
@@ -2690,7 +2780,7 @@ function App() {
                                     left: item.x * pageDisplayScale,
                                     top: item.y * pageDisplayScale,
                                     fontSize: item.fontSize * pageDisplayScale,
-                                    fontFamily: item.fontName || 'sans-serif',
+                                    fontFamily: resolveCanvasFontFamily(item.detectedFontFamily || item.fontName),
                                     width: (item.width || 0) * pageDisplayScale || 'auto',
                                     height: item.height * pageDisplayScale,
                                     color: isEditing || item.str !== item.originalStr ? item.color : undefined,
@@ -2702,6 +2792,7 @@ function App() {
                                     openTextEditSession(selectedPage, idx, item.str);
                                     setCurrentColor(item.color || '#000000');
                                     setCurrentFontSize(Math.max(8, Math.round(item.fontSize)));
+                                    if (item.detectedFontFamily) setCurrentFontFamily(item.detectedFontFamily);
                                   }}
                                   onBlur={(e) => {
                                     const finalText = (e.currentTarget.textContent || '').trimEnd();
@@ -2937,7 +3028,19 @@ function App() {
                             <option value="Helvetica">Helvetica</option>
                             <option value="Courier">Courier</option>
                             <option value="Times">Times New Roman</option>
+                            {uploadedFonts.map(font => (
+                              <option key={font.id} value={font.family}>{font.family} (Uploaded)</option>
+                            ))}
                           </select>
+                        </div>
+                        <div className="control-group">
+                          <label>Upload Fonts (.ttf / .otf)</label>
+                          <input type="file" accept=".ttf,.otf,.ttc,.woff,.woff2" multiple onChange={handleFontUpload} />
+                          {uploadedFonts.length > 0 && (
+                            <div style={{fontSize: 11, color: 'var(--text-secondary)', marginTop: 6}}>
+                              Loaded: {uploadedFonts.map(f => f.family).join(', ')}
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
@@ -2949,6 +3052,9 @@ function App() {
                           <input type="checkbox" checked={autoMatchTextStyle} onChange={e => setAutoMatchTextStyle(e.target.checked)} />
                           Auto-match detected font and color
                         </label>
+                        <p style={{fontSize: 11, color: 'var(--text-secondary)', margin: '4px 0 0 0'}}>
+                          Detected fonts: {detectedFonts.length > 0 ? detectedFonts.slice(0, 8).join(', ') : 'None detected yet'}
+                        </p>
                         <div className="control-group">
                           <label>Font Size Calibration ({textSizeAdjustPct}%)</label>
                           <input type="range" min="80" max="140" step="1" value={textSizeAdjustPct} onChange={e => setTextSizeAdjustPct(Number(e.target.value))} />
@@ -3010,6 +3116,9 @@ function App() {
                                  <option value="Courier">Monospaced</option>
                                  <option value="Inter">Inter (Premium Sans)</option>
                                  <option value="Playfair Display">Playfair (Elegant)</option>
+                                 {uploadedFonts.map(font => (
+                                   <option key={font.id} value={font.family}>{font.family} (Uploaded)</option>
+                                 ))}
                                </select>
                              </div>
                              <div className="property-row">
@@ -3280,7 +3389,7 @@ function App() {
                 border: '1px solid var(--border-color)',
                 background: 'rgba(255,255,255,0.03)',
                 marginBottom: 10,
-                fontFamily: resolveCanvasFontFamily(editItem.fontName),
+                fontFamily: resolveCanvasFontFamily(editItem.detectedFontFamily || editItem.fontName),
                 color: editItem.color,
                 fontSize: Math.max(14, Math.min(26, editItem.fontSize * 0.9))
               }}>
